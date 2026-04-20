@@ -1,0 +1,26 @@
+# GhostScribe client configuration.
+# Copy this to ./config.toml or ~/.config/ghostscribe/config.toml and edit.
+
+# URL of the GhostScribe server (no trailing slash).
+server_url = "http://localhost:5005"
+
+# Which endpoint to POST to. One of:
+#   /v1/auto  - autodetect language, transcribe
+#   /v1/en    - force English transcription
+#   /v1/sk    - Slovak audio -> English text (translation)
+endpoint = "/v1/auto"
+
+# Push-to-Talk key name as understood by pynput.
+# Examples: "ctrl_r" (right control), "alt_r", "f12", "pause", "menu".
+# For a letter key use e.g. ptt_key = "`" (backtick).
+ptt_key = "ctrl_r"
+
+# Optional. If the server has GHOSTSCRIBE_AUTH_TOKEN set, put the same
+# value here; it is sent as the X-Auth-Token header.
+auth_token = ""
+
+# Optional. Audio input device name or index as recognised by sounddevice.
+# Leave empty to use the system default. Run:
+#   python -c "import sounddevice; print(sounddevice.query_devices())"
+# to list devices.
+input_device = ""
