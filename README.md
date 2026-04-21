@@ -236,9 +236,8 @@ CLI flags override config values: `--endpoint /v1/en`, `--server-url ...`,
 ## Security note
 
 The server is intended for **intranet** deployment. It binds `0.0.0.0`
-by default and has no TLS of its own. If your network isn't trusted, at
-minimum set `GHOSTSCRIBE_AUTH_TOKEN` and put a reverse proxy (nginx,
-Caddy, Traefik) with TLS in front of it.
+by default and has no TLS of its own. If your network isn't trusted,
+set `GHOSTSCRIBE_AUTH_TOKEN` to require a shared secret on every request.
 
 ## License
 
