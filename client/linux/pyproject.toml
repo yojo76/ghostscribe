@@ -2,7 +2,7 @@
 name = "ghostscribe-client"
 version = "0.1.0"
 description = "GhostScribe minimal PTT client for the GhostScribe STT server."
-readme = "../README.md"
+readme = "../../README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "GhostScribe contributors" }]

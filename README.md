@@ -36,12 +36,16 @@ ghostscribe/
     systemd/server.env.example
     pyproject.toml
     requirements.txt
-  client/                          minimal PTT CLI
-    ghostscribe_client/
-    config.example.toml
-    pyproject.toml
-    requirements.txt
+  client/
+    linux/                         minimal Linux PTT client (Python)
+      ghostscribe_client/
+      config.example.toml
+      pyproject.toml
+      requirements.txt
+    windows/                       Windows PTT client (planned)
+      README.md
   start_requirements.md            product spec
+  HARDWARE.md                      reference host hardware
 ```
 
 ## API
@@ -135,12 +139,23 @@ curl -F "audio=@sample.wav" http://localhost:5005/v1/auto
 curl http://localhost:5005/v1/health
 ```
 
-## Client
+## Clients
+
+The repo hosts one client per platform under `client/`. They are
+independent projects with their own `requirements.txt` / `pyproject.toml`
+so they can be worked on separately.
+
+- `client/linux/` -- reference Python client for X11 Linux (Cinnamon /
+  GNOME on X11). Instructions below.
+- `client/windows/` -- planned Windows client; design + setup notes in
+  [client/windows/README.md](client/windows/README.md).
+
+## Linux client
 
 ### Install
 
 ```bash
-cd client
+cd client/linux
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
