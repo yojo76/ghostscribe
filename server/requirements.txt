@@ -3,3 +3,4 @@ uvicorn[standard]>=0.32,<1.0
 python-multipart>=0.0.12
 faster-whisper>=1.1.0
 soundfile>=0.12.1
+prometheus_client>=0.20,<1.0
