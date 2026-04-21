@@ -5,23 +5,19 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=ghostscribe
-Group=ghostscribe
-WorkingDirectory=/opt/ghostscribe/server
+User=yojo
+Group=yojo
+WorkingDirectory=/home/yojo/Documents/code/meridian/ghostscribe/server
 EnvironmentFile=/etc/ghostscribe/server.env
-ExecStart=/opt/ghostscribe/server/.venv/bin/uvicorn ghostscribe_server.app:app \
-    --host ${GHOSTSCRIBE_HOST} \
-    --port ${GHOSTSCRIBE_PORT} \
-    --workers 1
+ExecStart=/home/yojo/Documents/code/meridian/ghostscribe/server/.venv/bin/uvicorn ghostscribe_server.app:app --host ${GHOSTSCRIBE_HOST} --port ${GHOSTSCRIBE_PORT} --workers 1
 Restart=on-failure
 RestartSec=3
 
-# Hardening (best-effort; relax if your setup needs more access)
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/opt/ghostscribe/server/logs
+ProtectHome=false
+ReadWritePaths=/home/yojo/Documents/code/meridian/ghostscribe/server/logs
 
 [Install]
 WantedBy=multi-user.target
