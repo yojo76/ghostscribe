@@ -20,12 +20,15 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
     import tomli as tomllib  # type: ignore[no-redef]
 
 
-DEFAULTS: dict[str, str] = {
+DEFAULTS: dict[str, object] = {
     "server_url": "http://localhost:5005",
     "endpoint": "/v1/auto",
-    "ptt_key": "ctrl_r",
+    "trigger": "mouse:x2",
     "auth_token": "",
     "input_device": "",
+    "audio_format": "flac",
+    "auto_paste": True,
+    "paste_delay_ms": 50,
 }
 
 
@@ -33,9 +36,12 @@ DEFAULTS: dict[str, str] = {
 class ClientConfig:
     server_url: str
     endpoint: str
-    ptt_key: str
+    trigger: str
     auth_token: str = ""
     input_device: str = ""
+    audio_format: str = "flac"
+    auto_paste: bool = True
+    paste_delay_ms: int = 50
     source_path: Path | None = field(default=None, compare=False)
 
     @property
@@ -59,6 +65,18 @@ def _candidate_paths(explicit: Path | None) -> list[Path]:
     return paths
 
 
+def _coerce_bool(value: object, *, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in {"true", "yes", "on", "1"}:
+            return True
+        if v in {"false", "no", "off", "0"}:
+            return False
+    raise ValueError(f"{field_name} must be a boolean, got {value!r}")
+
+
 def load_config(explicit: Path | None = None) -> ClientConfig:
     """Load a ``ClientConfig`` from the first matching config file, or defaults."""
     data: dict[str, object] = {}
@@ -70,16 +88,19 @@ def load_config(explicit: Path | None = None) -> ClientConfig:
             source = path
             break
 
-    merged: dict[str, str] = {**DEFAULTS}
+    merged: dict[str, object] = {**DEFAULTS}
     for key in DEFAULTS:
         if key in data and data[key] is not None:
-            merged[key] = str(data[key])
+            merged[key] = data[key]
 
     return ClientConfig(
-        server_url=merged["server_url"],
-        endpoint=merged["endpoint"],
-        ptt_key=merged["ptt_key"],
-        auth_token=merged["auth_token"],
-        input_device=merged["input_device"],
+        server_url=str(merged["server_url"]),
+        endpoint=str(merged["endpoint"]),
+        trigger=str(merged["trigger"]),
+        auth_token=str(merged["auth_token"]),
+        input_device=str(merged["input_device"]),
+        audio_format=str(merged["audio_format"]).lower(),
+        auto_paste=_coerce_bool(merged["auto_paste"], field_name="auto_paste"),
+        paste_delay_ms=int(merged["paste_delay_ms"]),
         source_path=source,
     )

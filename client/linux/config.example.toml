@@ -10,17 +10,42 @@ server_url = "http://localhost:5005"
 #   /v1/sk    - Slovak audio -> English text (translation)
 endpoint = "/v1/auto"
 
-# Push-to-Talk key name as understood by pynput.
-# Examples: "ctrl_r" (right control), "alt_r", "f12", "pause", "menu".
-# For a letter key use e.g. ptt_key = "`" (backtick).
-ptt_key = "ctrl_r"
+# Push-to-talk trigger. Format: "<kind>:<value>".
+#
+#   mouse:<button>   left, middle, right, x1, x2, back, forward, or
+#                    an explicit pynput name like button8 / button9.
+#                    x1 / back == thumb rear; x2 / forward == thumb front.
+#   key:<name>       a single key. Names are pynput keyboard.Key names
+#                    (e.g. ctrl_r, alt_r, f12, pause) or a single char.
+#   key:<mods>+<key> a chord. Modifiers: ctrl, shift, alt, super
+#                    (each matches both left and right variants).
+#                    Example: "key:ctrl+g", "key:ctrl+shift+space"
+#
+# Press = start recording. Release of the target key (or any modifier in
+# the chord, or the mouse button) = stop and send.
+trigger = "mouse:x2"
 
 # Optional. If the server has GHOSTSCRIBE_AUTH_TOKEN set, put the same
 # value here; it is sent as the X-Auth-Token header.
 auth_token = ""
 
-# Optional. Audio input device name or index as recognised by sounddevice.
-# Leave empty to use the system default. Run:
+# Optional. Audio input device name (substring match) or integer index as
+# recognised by sounddevice. Leave empty to use the system default. Run:
 #   python -c "import sounddevice; print(sounddevice.query_devices())"
 # to list devices.
 input_device = ""
+
+# Audio encoding sent to the server. "flac" is lossless and roughly halves
+# the payload vs "wav"; use "wav" only if you need to debug raw PCM.
+audio_format = "flac"
+
+# When true, the transcript is copied to the X11 CLIPBOARD via `xclip`
+# and then Ctrl+V is simulated into whatever window has focus. Set to
+# false to print to stderr only (no clipboard, no injection).
+# Install xclip first: sudo apt install xclip
+auto_paste = true
+
+# Milliseconds to wait after the clipboard write before injecting Ctrl+V.
+# Gives the X server a tick to settle and the target window to be ready.
+# Increase (e.g. 100) if the target occasionally misses the paste.
+paste_delay_ms = 50

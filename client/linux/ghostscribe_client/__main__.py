@@ -1,14 +1,16 @@
 """GhostScribe minimal PTT client.
 
-Hold the configured key; while it's held, 16 kHz mono 16-bit audio is
-captured. On key release the buffer is assembled into a WAV in memory,
-POSTed to the configured endpoint, and the returned transcript is printed
-to stdout. Timing / status info goes to stderr.
+Hold the configured trigger (a mouse button or keyboard combo); while it's
+held, 16 kHz mono 16-bit audio is captured. On release the buffer is
+encoded (FLAC by default), POSTed to the configured endpoint, and the
+returned transcript is pushed to the X11 CLIPBOARD via ``xclip``. Timing
+and status info goes to stderr.
 
 Usage:
     python -m ghostscribe_client
     python -m ghostscribe_client --config ~/my_gs.toml
     python -m ghostscribe_client --endpoint /v1/sk
+    python -m ghostscribe_client --trigger key:ctrl+g
 
 Press Ctrl+C in the terminal to exit.
 """
@@ -18,10 +20,13 @@ from __future__ import annotations
 import argparse
 import io
 import queue
+import shutil
 import signal
+import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +34,7 @@ import numpy as np
 import sounddevice as sd
 import soundfile as sf
 import httpx
-from pynput import keyboard
+from pynput import keyboard, mouse
 
 from .config import ClientConfig, load_config
 
@@ -47,24 +52,6 @@ def _eprint(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
-def _resolve_ptt_key(name: str) -> Any:
-    """Translate a string like ctrl_r / f12 / backtick to a pynput key."""
-    name = name.strip()
-    if not name:
-        raise ValueError("ptt_key is empty")
-    # Try special keys (Key.ctrl_r, Key.f12, etc.)
-    special = getattr(keyboard.Key, name, None)
-    if isinstance(special, keyboard.Key):
-        return special
-    # Fall back to a character key.
-    if len(name) == 1:
-        return keyboard.KeyCode.from_char(name)
-    raise ValueError(
-        f"unknown ptt_key {name!r}. Use names from pynput.keyboard.Key "
-        "(e.g. ctrl_r, alt_r, f12) or a single character."
-    )
-
-
 def _resolve_input_device(raw: str) -> int | str | None:
     raw = raw.strip()
     if not raw:
@@ -74,17 +61,125 @@ def _resolve_input_device(raw: str) -> int | str | None:
     return raw
 
 
-def _keys_equal(a: Any, b: Any) -> bool:
-    """Compare two pynput keys, tolerating KeyCode vs Key variants."""
-    if a == b:
-        return True
-    # Some platforms emit KeyCode with .vk but no .char; compare string form as a fallback.
-    try:
-        if isinstance(a, keyboard.KeyCode) and isinstance(b, keyboard.KeyCode):
-            return a.char == b.char and a.vk == b.vk
-    except AttributeError:
-        pass
-    return False
+# --------------------------------------------------------------------------- #
+# Trigger parsing                                                             #
+# --------------------------------------------------------------------------- #
+
+
+# pynput exposes a different set of Button members per platform: Linux has
+# ``button8``..``button30``, Windows has ``x1``/``x2``. Accept common aliases
+# and resolve them with getattr so a config like ``mouse:x2`` works on both.
+_MOUSE_BUTTON_ALIASES: dict[str, tuple[str, ...]] = {
+    "left": ("left",),
+    "middle": ("middle",),
+    "right": ("right",),
+    "x1": ("x1", "button8"),
+    "x2": ("x2", "button9"),
+    "back": ("button8", "x1"),
+    "forward": ("button9", "x2"),
+    "button8": ("button8",),
+    "button9": ("button9",),
+}
+
+
+def _resolve_mouse_button(name: str) -> mouse.Button | None:
+    for cand in _MOUSE_BUTTON_ALIASES.get(name.lower(), (name.lower(),)):
+        btn = getattr(mouse.Button, cand, None)
+        if isinstance(btn, mouse.Button):
+            return btn
+    return None
+
+# Modifier families: each name maps to every pynput Key that should
+# satisfy it. "ctrl" matches ctrl_l, ctrl_r, and the bare Key.ctrl.
+_MODIFIER_FAMILIES: dict[str, frozenset[Any]] = {
+    "ctrl": frozenset(
+        {keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r}
+    ),
+    "shift": frozenset(
+        {keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r}
+    ),
+    "alt": frozenset(
+        {
+            keyboard.Key.alt,
+            keyboard.Key.alt_l,
+            keyboard.Key.alt_r,
+            getattr(keyboard.Key, "alt_gr", keyboard.Key.alt_r),
+        }
+    ),
+    "super": frozenset(
+        {keyboard.Key.cmd, keyboard.Key.cmd_l, keyboard.Key.cmd_r}
+    ),
+}
+
+
+@dataclass(frozen=True)
+class KeyTrigger:
+    modifiers: tuple[frozenset[Any], ...]
+    target: Any  # keyboard.Key or keyboard.KeyCode
+    label: str
+
+
+@dataclass(frozen=True)
+class MouseTrigger:
+    button: mouse.Button
+    label: str
+
+
+Trigger = KeyTrigger | MouseTrigger
+
+
+def _resolve_target_key(name: str) -> Any:
+    if not name:
+        raise ValueError("empty key name")
+    special = getattr(keyboard.Key, name, None)
+    if isinstance(special, keyboard.Key):
+        return special
+    if len(name) == 1:
+        return keyboard.KeyCode.from_char(name)
+    raise ValueError(
+        f"unknown key {name!r}. Use a pynput Key name (ctrl_r, f12, ...) "
+        "or a single character."
+    )
+
+
+def parse_trigger(spec: str) -> Trigger:
+    spec = spec.strip()
+    if ":" not in spec:
+        raise ValueError(
+            f"invalid trigger {spec!r}; expected 'mouse:<button>' or 'key:<combo>'"
+        )
+    kind, _, value = spec.partition(":")
+    kind = kind.strip().lower()
+    value = value.strip()
+
+    if kind == "mouse":
+        btn = _resolve_mouse_button(value)
+        if btn is None:
+            raise ValueError(
+                f"unknown mouse button {value!r}. "
+                f"Known aliases: {', '.join(sorted(_MOUSE_BUTTON_ALIASES))}"
+            )
+        return MouseTrigger(button=btn, label=f"mouse:{value.lower()}")
+
+    if kind == "key":
+        parts = [p.strip() for p in value.split("+")]
+        if not parts or not all(parts):
+            raise ValueError(f"invalid key trigger {value!r}")
+        *mod_names, target_name = parts
+        mods: list[frozenset[Any]] = []
+        for name in mod_names:
+            fam = _MODIFIER_FAMILIES.get(name.lower())
+            if fam is None:
+                raise ValueError(
+                    f"unknown modifier {name!r}. "
+                    f"Known: {', '.join(sorted(_MODIFIER_FAMILIES))}"
+                )
+            mods.append(fam)
+        target = _resolve_target_key(target_name)
+        label = "key:" + "+".join([*(m.lower() for m in mod_names), target_name])
+        return KeyTrigger(modifiers=tuple(mods), target=target, label=label)
+
+    raise ValueError(f"unknown trigger kind {kind!r}; expected 'mouse' or 'key'")
 
 
 # --------------------------------------------------------------------------- #
@@ -131,18 +226,76 @@ class Recorder:
             self._chunks.clear()
         self._active.set()
 
-    def end(self) -> bytes:
-        """Stop capturing and return the collected audio as a WAV byte string."""
+    def end(self) -> np.ndarray | None:
+        """Stop capturing and return the collected audio as a single ndarray."""
         self._active.clear()
         with self._lock:
             chunks = self._chunks
             self._chunks = []
         if not chunks:
-            return b""
-        audio = np.concatenate(chunks, axis=0)
-        buf = io.BytesIO()
+            return None
+        return np.concatenate(chunks, axis=0)
+
+
+# --------------------------------------------------------------------------- #
+# Encoding                                                                    #
+# --------------------------------------------------------------------------- #
+
+
+def encode_audio(
+    audio: np.ndarray, fmt: str
+) -> tuple[bytes, str, str]:
+    """Encode ``audio`` as FLAC or WAV. Returns (bytes, filename, mime)."""
+    buf = io.BytesIO()
+    if fmt == "flac":
+        sf.write(buf, audio, SAMPLE_RATE, format="FLAC")
+        return buf.getvalue(), "recording.flac", "audio/flac"
+    if fmt == "wav":
         sf.write(buf, audio, SAMPLE_RATE, subtype="PCM_16", format="WAV")
-        return buf.getvalue()
+        return buf.getvalue(), "recording.wav", "audio/wav"
+    raise ValueError(f"unknown audio_format {fmt!r}; use 'flac' or 'wav'")
+
+
+# --------------------------------------------------------------------------- #
+# Clipboard                                                                   #
+# --------------------------------------------------------------------------- #
+
+
+def copy_to_clipboard(text: str) -> bool:
+    """Push ``text`` onto the X11 CLIPBOARD via ``xclip``. Returns True on success."""
+    xclip = shutil.which("xclip")
+    if xclip is None:
+        _eprint("[paste] xclip not found; install with: sudo apt install xclip")
+        return False
+    try:
+        subprocess.run(
+            [xclip, "-selection", "clipboard"],
+            input=text.encode("utf-8"),
+            check=True,
+            timeout=5,
+        )
+        return True
+    except subprocess.SubprocessError as exc:
+        _eprint(f"[paste] xclip failed: {exc}")
+        return False
+
+
+_paste_kb: keyboard.Controller | None = None
+
+
+def inject_paste(delay_ms: int) -> None:
+    """Simulate Ctrl+V in the currently focused window."""
+    global _paste_kb
+    if _paste_kb is None:
+        _paste_kb = keyboard.Controller()
+    if delay_ms > 0:
+        time.sleep(delay_ms / 1000.0)
+    _paste_kb.press(keyboard.Key.ctrl)
+    try:
+        _paste_kb.press("v")
+        _paste_kb.release("v")
+    finally:
+        _paste_kb.release(keyboard.Key.ctrl)
 
 
 # --------------------------------------------------------------------------- #
@@ -150,17 +303,25 @@ class Recorder:
 # --------------------------------------------------------------------------- #
 
 
-def submit(cfg: ClientConfig, client: httpx.Client, wav_bytes: bytes) -> None:
-    if not wav_bytes:
+def submit(
+    cfg: ClientConfig, client: httpx.Client, audio: np.ndarray | None
+) -> None:
+    if audio is None or len(audio) == 0:
         _eprint("[send] skipped: no audio captured")
+        return
+
+    try:
+        payload, filename, mime = encode_audio(audio, cfg.audio_format)
+    except Exception as exc:
+        _eprint(f"[send] encoding failed: {exc}")
         return
 
     headers: dict[str, str] = {}
     if cfg.has_auth:
         headers["X-Auth-Token"] = cfg.auth_token
 
-    files = {"audio": ("recording.wav", wav_bytes, "audio/wav")}
-    size_kb = len(wav_bytes) / 1024
+    files = {"audio": (filename, payload, mime)}
+    size_kb = len(payload) / 1024
     t0 = time.perf_counter()
     try:
         resp = client.post(cfg.url, files=files, headers=headers, timeout=30.0)
@@ -182,10 +343,23 @@ def submit(cfg: ClientConfig, client: httpx.Client, wav_bytes: bytes) -> None:
     lang = data.get("language", "?")
     prob = data.get("language_probability", 0)
     _eprint(f"[recv] {size_kb:.0f} kB in {dt_ms:.0f} ms (lang={lang} p={prob})")
-    if text:
-        print(text, flush=True)
-    else:
+    if not text:
         _eprint("[recv] empty transcript")
+        return
+
+    pasted = False
+    if cfg.auto_paste:
+        if copy_to_clipboard(text):
+            try:
+                inject_paste(cfg.paste_delay_ms)
+                pasted = True
+            except Exception as exc:
+                _eprint(f"[paste] Ctrl+V injection failed: {exc}")
+    if pasted:
+        _eprint("[paste] pasted into focused window:")
+    else:
+        _eprint("[recv] transcript:")
+    _eprint(text)
 
 
 # --------------------------------------------------------------------------- #
@@ -194,7 +368,12 @@ def submit(cfg: ClientConfig, client: httpx.Client, wav_bytes: bytes) -> None:
 
 
 def run(cfg: ClientConfig) -> int:
-    ptt = _resolve_ptt_key(cfg.ptt_key)
+    try:
+        trig = parse_trigger(cfg.trigger)
+    except ValueError as exc:
+        _eprint(f"[fatal] {exc}")
+        return 2
+
     device = _resolve_input_device(cfg.input_device)
 
     _eprint(f"GhostScribe client -> {cfg.url}")
@@ -202,10 +381,18 @@ def run(cfg: ClientConfig) -> int:
         _eprint(f"config:   {cfg.source_path}")
     else:
         _eprint("config:   (defaults, no config file found)")
-    _eprint(f"ptt key:  {cfg.ptt_key}")
+    _eprint(f"trigger:  {trig.label}")
     _eprint(f"device:   {device if device is not None else '(system default)'}")
+    _eprint(f"format:   {cfg.audio_format}")
+    _eprint(
+        f"paste:    {'on' if cfg.auto_paste else 'off'}"
+        f" (delay {cfg.paste_delay_ms} ms)"
+    )
     _eprint(f"auth:     {'on' if cfg.has_auth else 'off'}")
-    _eprint("Hold the PTT key and speak. Release to transcribe. Ctrl+C to quit.")
+    _eprint("Hold the trigger and speak. Release to transcribe. Ctrl+C to quit.")
+
+    if cfg.auto_paste and shutil.which("xclip") is None:
+        _eprint("[warn] auto_paste is on but xclip is not installed.")
 
     recorder = Recorder(device)
     try:
@@ -214,9 +401,9 @@ def run(cfg: ClientConfig) -> int:
         _eprint(f"[fatal] could not open audio input: {exc}")
         return 1
 
-    jobs: queue.Queue[bytes | None] = queue.Queue()
-    pressed = threading.Event()
+    jobs: queue.Queue[np.ndarray | None] = queue.Queue()
     stop = threading.Event()
+    recording = threading.Event()
 
     with httpx.Client() as http:
 
@@ -233,21 +420,82 @@ def run(cfg: ClientConfig) -> int:
         worker_thread = threading.Thread(target=worker, name="gs-submit", daemon=True)
         worker_thread.start()
 
-        def on_press(key: Any) -> None:
-            if _keys_equal(key, ptt) and not pressed.is_set():
-                pressed.set()
-                recorder.begin()
-                _eprint("[rec] ...")
+        def start_recording() -> None:
+            if recording.is_set():
+                return
+            recording.set()
+            recorder.begin()
+            _eprint("[rec] ...")
 
-        def on_release(key: Any) -> None:
-            if _keys_equal(key, ptt) and pressed.is_set():
-                pressed.clear()
-                wav_bytes = recorder.end()
-                _eprint(f"[rec] stopped, {len(wav_bytes) / 1024:.0f} kB")
-                jobs.put(wav_bytes)
+        def stop_recording() -> None:
+            if not recording.is_set():
+                return
+            recording.clear()
+            audio = recorder.end()
+            n = 0 if audio is None else len(audio)
+            _eprint(f"[rec] stopped, {n * 2 / 1024:.0f} kB raw")
+            jobs.put(audio)
 
-        listener = keyboard.Listener(on_press=on_press, on_release=on_release)
-        listener.start()
+        listeners: list[Any] = []
+
+        if isinstance(trig, MouseTrigger):
+            target_button = trig.button
+
+            def on_click(
+                _x: int, _y: int, button: mouse.Button, pressed: bool
+            ) -> None:
+                if button != target_button:
+                    return
+                if pressed:
+                    start_recording()
+                else:
+                    stop_recording()
+
+            listeners.append(mouse.Listener(on_click=on_click))
+
+        else:  # KeyTrigger
+            held: set[Any] = set()
+            held_lock = threading.Lock()
+            key_trig: KeyTrigger = trig
+
+            def _involved(key: Any) -> bool:
+                if key == key_trig.target:
+                    return True
+                for fam in key_trig.modifiers:
+                    if key in fam:
+                        return True
+                return False
+
+            def _combo_satisfied() -> bool:
+                if key_trig.target not in held:
+                    return False
+                for fam in key_trig.modifiers:
+                    if fam.isdisjoint(held):
+                        return False
+                return True
+
+            kb_listener: keyboard.Listener | None = None
+
+            def on_press(key: Any) -> None:
+                k = kb_listener.canonical(key) if kb_listener else key
+                with held_lock:
+                    held.add(k)
+                    satisfied = _combo_satisfied()
+                if satisfied:
+                    start_recording()
+
+            def on_release(key: Any) -> None:
+                k = kb_listener.canonical(key) if kb_listener else key
+                with held_lock:
+                    held.discard(k)
+                if _involved(k) and recording.is_set():
+                    stop_recording()
+
+            kb_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+            listeners.append(kb_listener)
+
+        for ls in listeners:
+            ls.start()
 
         def _stop(_sig=None, _frame=None) -> None:  # noqa: ANN001
             stop.set()
@@ -263,7 +511,8 @@ def run(cfg: ClientConfig) -> int:
                 stop.wait(0.25)
         finally:
             _eprint("Shutting down...")
-            listener.stop()
+            for ls in listeners:
+                ls.stop()
             jobs.put(None)
             worker_thread.join(timeout=5.0)
             recorder.stop_stream()
@@ -276,9 +525,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--config", type=Path, help="Path to a TOML config file.")
     p.add_argument("--server-url", help="Override server_url.")
     p.add_argument("--endpoint", help="Override endpoint (e.g. /v1/en).")
-    p.add_argument("--ptt-key", help="Override PTT key name.")
+    p.add_argument(
+        "--trigger",
+        help='Override trigger, e.g. "mouse:x2" or "key:ctrl+g".',
+    )
     p.add_argument("--auth-token", help="Override auth token.")
     p.add_argument("--input-device", help="Override audio input device (name or index).")
+    p.add_argument(
+        "--audio-format",
+        choices=("flac", "wav"),
+        help="Override audio_format.",
+    )
+    paste = p.add_mutually_exclusive_group()
+    paste.add_argument(
+        "--paste",
+        dest="auto_paste",
+        action="store_const",
+        const=True,
+        help="Copy to clipboard and simulate Ctrl+V (default).",
+    )
+    paste.add_argument(
+        "--no-paste",
+        dest="auto_paste",
+        action="store_const",
+        const=False,
+        help="Do not touch the clipboard or inject Ctrl+V.",
+    )
+    p.add_argument(
+        "--paste-delay-ms",
+        type=int,
+        help="Milliseconds to wait between clipboard write and Ctrl+V.",
+    )
     return p.parse_args(argv)
 
 
@@ -287,9 +564,12 @@ def apply_overrides(cfg: ClientConfig, args: argparse.Namespace) -> ClientConfig
     for cli_name, cfg_name in [
         ("server_url", "server_url"),
         ("endpoint", "endpoint"),
-        ("ptt_key", "ptt_key"),
+        ("trigger", "trigger"),
         ("auth_token", "auth_token"),
         ("input_device", "input_device"),
+        ("audio_format", "audio_format"),
+        ("auto_paste", "auto_paste"),
+        ("paste_delay_ms", "paste_delay_ms"),
     ]:
         value = getattr(args, cli_name)
         if value is not None:
@@ -299,9 +579,12 @@ def apply_overrides(cfg: ClientConfig, args: argparse.Namespace) -> ClientConfig
     return ClientConfig(
         server_url=changes.get("server_url", cfg.server_url),
         endpoint=changes.get("endpoint", cfg.endpoint),
-        ptt_key=changes.get("ptt_key", cfg.ptt_key),
+        trigger=changes.get("trigger", cfg.trigger),
         auth_token=changes.get("auth_token", cfg.auth_token),
         input_device=changes.get("input_device", cfg.input_device),
+        audio_format=changes.get("audio_format", cfg.audio_format),
+        auto_paste=changes.get("auto_paste", cfg.auto_paste),
+        paste_delay_ms=changes.get("paste_delay_ms", cfg.paste_delay_ms),
         source_path=cfg.source_path,
     )
 

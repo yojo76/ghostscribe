@@ -163,10 +163,11 @@ cp config.example.toml config.toml
 $EDITOR config.toml
 ```
 
-On Linux you also need PortAudio for `sounddevice`:
+On Linux you also need PortAudio for `sounddevice` and `xclip` for the
+clipboard push:
 
 ```bash
-sudo apt install libportaudio2
+sudo apt install libportaudio2 xclip
 ```
 
 ### Usage
@@ -175,33 +176,53 @@ sudo apt install libportaudio2
 python -m ghostscribe_client
 ```
 
-Hold the PTT key (default: Right Ctrl). Speak. Release. The transcript
-appears on stdout; timing info and recording status go to stderr:
+Hold the configured trigger (default: mouse button `x2` -- the thumb
+"forward" button). Speak. Release. The transcript is pushed onto the X11
+CLIPBOARD via `xclip` and then `Ctrl+V` is simulated into whatever window
+has focus. Timing and the full transcript also print to stderr:
 
 ```
 GhostScribe client -> http://localhost:5005/v1/auto
 config:   /home/me/.config/ghostscribe/config.toml
-ptt key:  ctrl_r
+trigger:  mouse:x2
 device:   (system default)
+format:   flac
+paste:    on (delay 50 ms)
 auth:     off
-Hold the PTT key and speak. Release to transcribe. Ctrl+C to quit.
+Hold the trigger and speak. Release to transcribe. Ctrl+C to quit.
 [rec] ...
-[rec] stopped, 112 kB
-[recv] 112 kB in 430 ms (lang=en p=0.99)
+[rec] stopped, 96 kB raw
+[recv] 54 kB in 430 ms (lang=en p=0.99)
+[paste] pasted into focused window:
 Hello, this is a test transcription.
 ```
 
+Trigger formats:
+
+- `mouse:<button>` -- `left`, `middle`, `right`, `x1` / `back`,
+  `x2` / `forward`, or `button8` / `button9`.
+- `key:<name>` -- any pynput `keyboard.Key` name (`ctrl_r`, `f12`, ...)
+  or a single character.
+- `key:<mods>+<key>` -- chord, e.g. `key:ctrl+g`, `key:ctrl+shift+space`.
+  Modifiers: `ctrl`, `shift`, `alt`, `super` (each matches both left
+  and right variants). Releasing either the target or any modifier
+  stops recording and sends.
+
 CLI flags override config values: `--endpoint /v1/sk`, `--server-url ...`,
-`--ptt-key f12`, `--auth-token ...`, `--input-device "USB Mic"`.
+`--trigger key:ctrl+g`, `--auth-token ...`, `--input-device "USB Mic"`,
+`--audio-format wav`, `--no-paste`, `--paste-delay-ms 100`.
 
 ### Notes / known limitations
 
-- Global keyboard hooks work on **X11** (e.g. Linux Mint Cinnamon's
+- Global hooks (keyboard and mouse) work on **X11** (Linux Mint Cinnamon's
   default). On **Wayland** `pynput` cannot install a global hook; run
   the client in a terminal that has focus, or switch the session to X11.
-- Mouse Button 8/9 PTT is **not** wired up in this commit. Coming next.
-- The client **does not paste into the focused app** yet -- it just
-  prints the transcript. Save-Paste-Restore lands in a later commit.
+- Auto-paste **overwrites the system clipboard** with the transcript --
+  whatever you had copied is gone. The Save-Paste-Restore behavior that
+  backs up and restores the clipboard lands in a later commit.
+- Auto-paste uses `Ctrl+V`, which most **terminal emulators** ignore in
+  favour of `Ctrl+Shift+V`. Terminal detection + bracketed-paste lands
+  with Save-Paste-Restore.
 
 ## Explicitly deferred (coming in later commits)
 
