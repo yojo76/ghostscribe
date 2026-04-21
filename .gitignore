@@ -37,6 +37,7 @@ Thumbs.db
 server/.env
 client/.env
 *.env.local
+client/linux/config.toml
 
 # faster-whisper / huggingface model cache (if user points it at repo)
 .cache/
