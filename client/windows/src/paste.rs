@@ -12,7 +12,8 @@ use windows::Win32::System::DataExchange::{
 };
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_V,
+    MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+    KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, VIRTUAL_KEY, VK_CONTROL, VK_V,
 };
 
 const CF_UNICODETEXT: u32 = 13;
@@ -70,61 +71,43 @@ pub fn set_clipboard(text: &str) -> Result<()> {
     Ok(())
 }
 
+fn key_input(vk: VIRTUAL_KEY, key_up: bool) -> INPUT {
+    // Chromium-based hosts (Electron/VS Code/Cursor chat) inspect the hardware
+    // scan code in lParam and silently drop synthetic keystrokes whose scan
+    // code is zero. Map the VK to its scan code so our Ctrl+V is accepted
+    // there too, while plain Win32 edits and consoles (which dispatch on VK)
+    // keep working unchanged.
+    let scan = unsafe { MapVirtualKeyW(vk.0 as u32, MAPVK_VK_TO_VSC) } as u16;
+    let flags = if key_up {
+        KEYEVENTF_KEYUP
+    } else {
+        KEYBD_EVENT_FLAGS(0)
+    };
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: vk,
+                wScan: scan,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    }
+}
+
 pub fn inject_ctrl_v(delay_ms: u32) {
     if delay_ms > 0 {
         std::thread::sleep(Duration::from_millis(delay_ms as u64));
     }
 
-    let ctrl_down = INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 {
-            ki: KEYBDINPUT {
-                wVk: VK_CONTROL,
-                wScan: 0,
-                dwFlags: windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(0),
-                time: 0,
-                dwExtraInfo: 0,
-            },
-        },
-    };
-    let v_down = INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 {
-            ki: KEYBDINPUT {
-                wVk: VK_V,
-                wScan: 0,
-                dwFlags: windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(0),
-                time: 0,
-                dwExtraInfo: 0,
-            },
-        },
-    };
-    let v_up = INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 {
-            ki: KEYBDINPUT {
-                wVk: VK_V,
-                wScan: 0,
-                dwFlags: KEYEVENTF_KEYUP,
-                time: 0,
-                dwExtraInfo: 0,
-            },
-        },
-    };
-    let ctrl_up = INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 {
-            ki: KEYBDINPUT {
-                wVk: VK_CONTROL,
-                wScan: 0,
-                dwFlags: KEYEVENTF_KEYUP,
-                time: 0,
-                dwExtraInfo: 0,
-            },
-        },
-    };
-
-    let inputs = [ctrl_down, v_down, v_up, ctrl_up];
+    let inputs = [
+        key_input(VK_CONTROL, false),
+        key_input(VK_V, false),
+        key_input(VK_V, true),
+        key_input(VK_CONTROL, true),
+    ];
     unsafe {
         SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
     }

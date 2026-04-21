@@ -1,0 +1,35 @@
+# GhostScribe Windows client configuration.
+# Copy this to ./config.toml next to ghostscribe-client.exe and edit.
+
+# URL of the GhostScribe server (no trailing slash).
+server_url = "http://localhost:5005"
+
+# Which endpoint to POST to. One of:
+#   /v1/auto  - autodetect language, transcribe
+#   /v1/en    - force English transcription
+endpoint = "/v1/auto"
+
+# Optional. If the server has GHOSTSCRIBE_AUTH_TOKEN set, put the same
+# value here; it is sent as the X-Auth-Token header.
+auth_token = ""
+
+# Optional. Audio input device name (substring match, case-insensitive).
+# Leave empty to use the system default mic.
+input_device = ""
+
+# Audio encoding format sent to the server. "flac" is smaller (~half of WAV).
+# Use "wav" if you encounter compatibility issues.
+audio_format = "flac"
+
+# Push-to-talk trigger. Format: key:[modifier+]<keyname>
+# Modifier:  ctrl, shift, alt
+# Key names: a-z, f1-f24, pause, scroll, insert, delete, home, end, etc.
+# Examples:  key:ctrl+g   key:ctrl+r   key:f13   key:pause
+trigger = "key:ctrl+g"
+
+# Automatically paste the transcript into the focused window via Ctrl+V.
+# The previous clipboard contents are saved and restored afterwards.
+auto_paste = true
+
+# Milliseconds to wait before injecting Ctrl+V (give the window focus time).
+paste_delay_ms = 50
