@@ -1,0 +1,19 @@
+# GhostScribe Windows client configuration.
+# Copy this to ./config.toml next to ghostscribe-client.exe and edit.
+
+# URL of the GhostScribe server (no trailing slash).
+server_url = "http://localhost:5005"
+
+# Which endpoint to POST to. One of:
+#   /v1/auto  - autodetect language, transcribe
+#   /v1/en    - force English transcription
+#   /v1/sk    - Slovak audio -> English text (translation)
+endpoint = "/v1/auto"
+
+# Optional. If the server has GHOSTSCRIBE_AUTH_TOKEN set, put the same
+# value here; it is sent as the X-Auth-Token header.
+auth_token = ""
+
+# Optional. Audio input device name (substring match, case-insensitive).
+# Leave empty to use the system default mic.
+input_device = ""
