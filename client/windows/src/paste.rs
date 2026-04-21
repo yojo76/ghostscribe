@@ -6,7 +6,7 @@ use std::iter;
 use std::os::windows::ffi::OsStrExt;
 use std::time::Duration;
 
-use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Foundation::{HANDLE, HGLOBAL};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
 };
@@ -23,7 +23,8 @@ pub fn get_clipboard() -> Option<String> {
             return None;
         }
         let handle = GetClipboardData(CF_UNICODETEXT).ok()?;
-        let ptr = GlobalLock(HANDLE(handle.0)) as *const u16;
+        let hglobal = HGLOBAL(handle.0);
+        let ptr = GlobalLock(hglobal) as *const u16;
         if ptr.is_null() {
             let _ = CloseClipboard();
             return None;
@@ -34,9 +35,9 @@ pub fn get_clipboard() -> Option<String> {
         }
         let slice = std::slice::from_raw_parts(ptr, len);
         let text = String::from_utf16_lossy(slice);
-        GlobalUnlock(HANDLE(handle.0));
+        let _ = GlobalUnlock(hglobal);
         let _ = CloseClipboard();
-        Some(text.into_owned())
+        Some(text)
     }
 }
 
@@ -59,7 +60,7 @@ pub fn set_clipboard(text: &str) -> Result<()> {
             return Err(anyhow!("GlobalLock returned null"));
         }
         std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len());
-        GlobalUnlock(hmem);
+        let _ = GlobalUnlock(hmem);
 
         SetClipboardData(CF_UNICODETEXT, HANDLE(hmem.0))
             .map_err(|e| { let _ = CloseClipboard(); anyhow!("SetClipboardData: {e}") })?;

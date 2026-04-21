@@ -191,18 +191,23 @@ pub fn encode_flac(samples: &[i16]) -> Result<Vec<u8>> {
     use flacenc::bitsink::MemSink;
     use flacenc::component::BitRepr;
     use flacenc::config::Encoder as FlacConfig;
-    use flacenc::encode::encode_with_fixed_block_size;
+    use flacenc::encode_with_fixed_block_size;
+    use flacenc::error::Verify;
+    use flacenc::source::MemSource;
 
     let samples_i32: Vec<i32> = samples.iter().map(|&s| s as i32).collect();
-    let stream = encode_with_fixed_block_size(
-        &FlacConfig::default(),
-        samples_i32,
-        4096,
-        1,
-        16,
-        TARGET_SAMPLE_RATE as usize,
-    )
-    .map_err(|e| anyhow!("FLAC encode error: {e:?}"))?;
+    let channels: usize = 1;
+    let bits_per_sample: usize = 16;
+    let sample_rate: usize = TARGET_SAMPLE_RATE as usize;
+    let block_size: usize = 4096;
+
+    let source = MemSource::from_samples(&samples_i32, channels, bits_per_sample, sample_rate);
+    let verified_config = FlacConfig::default()
+        .into_verified()
+        .map_err(|(_, e)| anyhow!("FLAC config verify error: {e:?}"))?;
+
+    let stream = encode_with_fixed_block_size(&verified_config, source, block_size)
+        .map_err(|e| anyhow!("FLAC encode error: {e:?}"))?;
 
     let mut sink = MemSink::<u8>::new();
     stream
