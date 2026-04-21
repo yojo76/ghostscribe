@@ -8,9 +8,14 @@ Behaviour is identical to the Linux client, except the trigger is
 **Ctrl + G** instead of a mouse side button:
 
 - Hold `Ctrl` **and** `G` -> microphone starts recording.
-- Release **either** key -> buffer is encoded as 16 kHz mono WAV and
-  POSTed to the configured `<server_url><endpoint>`.
+- Release **either** key -> buffer is downmixed to mono, resampled to
+  16 kHz, encoded as **FLAC** (or WAV if configured) and POSTed to
+  the configured `<server_url><endpoint>`.
 - Transcript text goes to stdout; status/timing goes to stderr.
+- If `auto_paste = true` (the default), the transcript is copied to
+  the clipboard, `Ctrl+V` is synthesised into the focused window, and
+  the original clipboard contents are restored. Turn it off to use
+  stdout-only mode.
 - Same `auth_token` (sent as `X-Auth-Token`) the Linux client uses.
 
 ## 1. Get the binary
@@ -33,11 +38,29 @@ Next to `ghostscribe-client.exe`, drop a `config.toml`. Start from
 `config.example.toml` in this folder:
 
 ```toml
-server_url   = "http://SERVER_HOST:5005"
-endpoint     = "/v1/auto"         # or /v1/en or /v1/sk
-auth_token   = ""                 # same value as the Linux client
-input_device = ""                 # empty = Windows default mic
+server_url     = "http://SERVER_HOST:5005"
+endpoint       = "/v1/auto"       # /v1/auto | /v1/en | /v1/sk
+auth_token     = ""               # same value as the Linux client
+input_device   = ""               # empty = Windows default mic
+audio_format   = "flac"           # "flac" (smaller) or "wav"
+trigger        = "key:ctrl+g"     # key:[modifier+]<keyname>
+auto_paste     = true             # false => stdout only
+paste_delay_ms = 50               # ms before Ctrl+V and before restore
 ```
+
+All fields are optional; anything you omit falls back to the defaults
+above.
+
+| Key              | Default             | Notes                                                                                   |
+| ---------------- | ------------------- | --------------------------------------------------------------------------------------- |
+| `server_url`     | `http://localhost:5005` | No trailing slash.                                                                      |
+| `endpoint`       | `/v1/auto`          | `/v1/en` forces English, `/v1/sk` translates Slovak -> English.                          |
+| `auth_token`     | empty               | Sent as `X-Auth-Token` when non-empty. **Do not commit your real token.**               |
+| `input_device`   | empty               | Case-insensitive substring of the mic's Windows name. Empty = system default.           |
+| `audio_format`   | `flac`              | `flac` halves payload vs raw WAV. Use `wav` only if FLAC gives the server trouble.      |
+| `trigger`        | `key:ctrl+g`        | Modifiers: `ctrl`, `shift`, `alt`. Keys: `a`-`z`, `0`-`9`, `f1`-`f24`, `pause`, etc.    |
+| `auto_paste`     | `true`              | If `true`: save clipboard -> set transcript -> `Ctrl+V` -> restore clipboard.            |
+| `paste_delay_ms` | `50`                | Applied both before injecting `Ctrl+V` and before restoring the clipboard.              |
 
 Config search order:
 
@@ -45,6 +68,11 @@ Config search order:
 2. `<exe folder>\config.toml`
 3. `%APPDATA%\ghostscribe\config.toml`
 4. `.\config.toml` (current working directory)
+
+**Never commit a filled-in `dist/config.toml`**. It contains your
+`auth_token`. The repo's `.gitignore` explicitly excludes
+`client/windows/dist/config.toml` for this reason; only
+`config.example.toml` should live in git.
 
 ## 3. Run
 
@@ -60,9 +88,11 @@ Banner:
 GhostScribe client -> http://SERVER_HOST:5005/v1/auto
 config:   C:\...\config.toml
 trigger:  key:ctrl+g
+format:   flac
 auth:     on
+paste:    on (delay 50 ms)
 device:   Microphone (Realtek Audio) (48000 Hz, 2 ch)
-Hold Ctrl+G and speak. Release to transcribe. Ctrl+C to quit.
+Hold key:ctrl+g and speak. Release to transcribe. Ctrl+C to quit.
 ```
 
 Hold `Ctrl+G`, speak, release either key:
@@ -70,9 +100,11 @@ Hold `Ctrl+G`, speak, release either key:
 ```
 [rec] ...
 [rec] stopped, 112 kB raw
+[send] 58 kB flac
 [recv] 58 kB in 420 ms (lang=en p=0.99)
 [recv] transcript:
 Hello, this is a test transcription.
+[paste] done
 ```
 
 ## 4. Prerequisites on the Windows machine
@@ -103,17 +135,33 @@ Same UIPI caveat as any Windows input hook:
   silently block `SetWindowsHookEx`. Symptom: banner prints but the
   hotkey does nothing. Only IT can allowlist the binary.
 
-## 6. What this client intentionally does NOT do
+## 6. What this client does and does not do
 
-Same scope as the original Python/Windows plan (see
-`README.python.md` for the deferred-feature roadmap):
+**Implemented:**
 
-- No clipboard paste / `Ctrl+V` injection.
-- No tray icon, no autostart.
-- No client-side VAD.
-- No streaming / live partials.
+- Global `Ctrl+G` (or whatever `trigger` you set) via
+  `SetWindowsHookExW` / `WH_KEYBOARD_LL`, unprivileged.
+- Microphone capture via `cpal` (WASAPI under the hood), any source
+  rate / channels, downmixed to mono and resampled to 16 kHz.
+- FLAC or WAV encoding of the capture buffer.
+- Multipart HTTP(S) POST via `ureq`, optional `X-Auth-Token`.
+- Save-Paste-Restore clipboard injection (controlled by `auto_paste`):
+  save current clipboard -> set transcript -> `Ctrl+V` via `SendInput`
+  -> wait `paste_delay_ms` -> restore original clipboard.
 
-Transcripts go to stdout so you can pipe them wherever you like.
+**Not implemented (deferred; see `README.python.md` for the roadmap):**
+
+- No tray icon, no autostart shortcut, no installer.
+- No terminal detection / bracketed-paste fallback.
+- No client-side VAD (server-side VAD handles silence).
+- No streaming / live partial transcripts.
+- No clipboard-change verification before restore (if you copy
+  something between the paste and the restore, the restore will
+  clobber it).
+- No recording time cap (holding the hotkey forever grows a buffer).
+
+Transcripts always go to **stdout** regardless of `auto_paste`, so you
+can pipe them wherever you like even when the paste is on.
 
 ## 7. Files in this folder
 
@@ -124,8 +172,11 @@ Transcripts go to stdout so you can pipe them wherever you like.
 | `src/main.rs`          | Entry point; spawns hook thread + upload workers. |
 | `src/config.rs`        | TOML config loader (exe-dir, `%APPDATA%`, CWD).  |
 | `src/audio.rs`         | `cpal` capture, downmix, resample, WAV encode.   |
-| `src/hotkey.rs`        | `WH_KEYBOARD_LL` hook detecting `Ctrl+G`.        |
+| `src/hotkey.rs`        | `WH_KEYBOARD_LL` hook detecting the configured trigger. |
 | `src/upload.rs`        | Multipart `ureq` POST with `X-Auth-Token`.       |
-| `config.example.toml`  | Template config.                                 |
+| `src/paste.rs`         | Save-Paste-Restore via Win32 clipboard + `SendInput`. |
+| `config.example.toml`  | Template config (safe to commit).                |
+| `dist/ghostscribe-client.exe` | Prebuilt release binary.                   |
+| `dist/config.toml`     | **Gitignored.** Your local config with a real `auth_token`. |
 | `BUILD.md`             | Build instructions (Linux cross-compile & native).|
 | `README.python.md`     | Earlier deferred Python-based design + deferred-feature roadmap (kept for reference). |

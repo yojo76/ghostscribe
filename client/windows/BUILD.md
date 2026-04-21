@@ -44,18 +44,24 @@ usual Windows 10/11 system DLLs.
 
 1. Opens the default microphone via WASAPI (built into Windows 10/11).
 2. Installs a low-level keyboard hook (`SetWindowsHookEx` /
-   `WH_KEYBOARD_LL`) so it sees `Ctrl+G` even when focus is elsewhere.
-3. While `Ctrl` **and** `G` are both held, samples are appended to an
-   in-memory buffer.
-4. On release of **either** key, the buffer is downmixed to mono,
-   resampled to 16 kHz, encoded as WAV, and POSTed to
+   `WH_KEYBOARD_LL`) so it sees the configured `trigger` (default
+   `key:ctrl+g`) even when focus is elsewhere.
+3. While the trigger is held, samples are appended to an in-memory
+   buffer.
+4. On release, the buffer is downmixed to mono, resampled to 16 kHz,
+   encoded as **FLAC** (default) or WAV, and POSTed to
    `<server_url><endpoint>` as multipart `audio=...`.
 5. `X-Auth-Token` header carries `auth_token` from `config.toml`
    if present.
-6. Transcript text goes to **stdout**; status/timings go to **stderr**.
+6. If `auto_paste = true` (default), the transcript is pushed onto
+   the Windows clipboard, `Ctrl+V` is synthesised via `SendInput`
+   into the focused window, and the previous clipboard content is
+   restored after `paste_delay_ms`.
+7. Transcript text goes to **stdout**; status/timings go to **stderr**.
 
 This mirrors the Linux client's `mouse:x2` trigger behaviour, only with
-`Ctrl+G` as the trigger instead of the mouse side button.
+a configurable keyboard trigger (default `Ctrl+G`) instead of the mouse
+side button.
 
 ## Known platform constraints
 

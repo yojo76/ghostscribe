@@ -1,3 +1,6 @@
 /target
 /config.toml
 !/dist
+# Keep dist/ tracked (ships the prebuilt exe) but never commit
+# a real auth_token / server_url checked into dist/config.toml.
+/dist/config.toml
