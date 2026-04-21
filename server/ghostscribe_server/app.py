@@ -25,7 +25,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse
 
 from . import __version__
@@ -79,9 +79,10 @@ log = logging.getLogger("ghostscribe.app")
 
 
 async def auth_dep(
+    request: Request,
     x_auth_token: Annotated[str | None, Header(alias="X-Auth-Token")] = None,
 ) -> None:
-    settings: Settings = app.state.settings
+    settings: Settings = request.app.state.settings
     if not settings.auth_required:
         return
     if x_auth_token != settings.auth_token:
@@ -92,9 +93,9 @@ async def auth_dep(
 
 
 @app.get("/v1/health")
-async def health() -> JSONResponse:
-    settings: Settings = app.state.settings
-    engine: InferenceEngine = app.state.engine
+async def health(request: Request) -> JSONResponse:
+    settings: Settings = request.app.state.settings
+    engine: InferenceEngine = request.app.state.engine
     return JSONResponse(
         {
             "status": "ok",
@@ -108,14 +109,15 @@ async def health() -> JSONResponse:
 
 
 async def _do_transcribe(
+    request: Request,
     upload: UploadFile,
     *,
     language: str | None,
     translate: bool,
     label: str,
 ) -> dict:
-    settings: Settings = app.state.settings
-    engine: InferenceEngine = app.state.engine
+    settings: Settings = request.app.state.settings
+    engine: InferenceEngine = request.app.state.engine
 
     if not engine.ready:
         raise HTTPException(
@@ -155,18 +157,30 @@ async def _do_transcribe(
 
 
 @app.post("/v1/en", dependencies=[Depends(auth_dep)])
-async def transcribe_en(audio: Annotated[UploadFile, File(...)]) -> dict:
+async def transcribe_en(
+    request: Request, audio: Annotated[UploadFile, File(...)]
+) -> dict:
     """English audio in, English text out."""
-    return await _do_transcribe(audio, language="en", translate=False, label="EN")
+    return await _do_transcribe(
+        request, audio, language="en", translate=False, label="EN"
+    )
 
 
 @app.post("/v1/sk", dependencies=[Depends(auth_dep)])
-async def transcribe_sk(audio: Annotated[UploadFile, File(...)]) -> dict:
+async def transcribe_sk(
+    request: Request, audio: Annotated[UploadFile, File(...)]
+) -> dict:
     """Slovak audio in, English text out (Whisper ``task=translate``)."""
-    return await _do_transcribe(audio, language="sk", translate=True, label="SK->EN")
+    return await _do_transcribe(
+        request, audio, language="sk", translate=True, label="SK->EN"
+    )
 
 
 @app.post("/v1/auto", dependencies=[Depends(auth_dep)])
-async def transcribe_auto(audio: Annotated[UploadFile, File(...)]) -> dict:
+async def transcribe_auto(
+    request: Request, audio: Annotated[UploadFile, File(...)]
+) -> dict:
     """Autodetect language, transcribe (no translation)."""
-    return await _do_transcribe(audio, language=None, translate=False, label="AUTO")
+    return await _do_transcribe(
+        request, audio, language=None, translate=False, label="AUTO"
+    )

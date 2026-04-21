@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import logging
+from dataclasses import dataclass
 
 import soundfile as sf
 from fastapi import HTTPException, UploadFile, status
@@ -17,15 +18,13 @@ from fastapi import HTTPException, UploadFile, status
 log = logging.getLogger("ghostscribe.audio")
 
 
+@dataclass(frozen=True)
 class AudioInfo:
-    __slots__ = ("samplerate", "channels", "frames", "format", "subtype")
-
-    def __init__(self, info: sf._SoundFileInfo) -> None:  # type: ignore[name-defined]
-        self.samplerate = info.samplerate
-        self.channels = info.channels
-        self.frames = info.frames
-        self.format = info.format
-        self.subtype = info.subtype
+    samplerate: int
+    channels: int
+    frames: int
+    format: str
+    subtype: str
 
     @property
     def duration_s(self) -> float:
@@ -64,4 +63,10 @@ async def read_upload(
             detail=f"could not parse audio: {exc}",
         ) from exc
 
-    return audio_bytes, AudioInfo(info)
+    return audio_bytes, AudioInfo(
+        samplerate=int(info.samplerate),
+        channels=int(info.channels),
+        frames=int(info.frames),
+        format=str(info.format),
+        subtype=str(info.subtype),
+    )
