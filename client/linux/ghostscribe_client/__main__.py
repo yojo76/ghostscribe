@@ -9,7 +9,6 @@ and status info goes to stderr.
 Usage:
     python -m ghostscribe_client
     python -m ghostscribe_client --config ~/my_gs.toml
-    python -m ghostscribe_client --endpoint /v1/sk
     python -m ghostscribe_client --trigger key:ctrl+g
 
 Press Ctrl+C in the terminal to exit.

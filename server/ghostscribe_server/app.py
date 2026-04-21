@@ -4,7 +4,6 @@ Routes (all under ``/v1``):
 
 * ``GET  /v1/health`` -- liveness + readiness probe.
 * ``POST /v1/en``     -- English audio -> English text.
-* ``POST /v1/sk``     -- Slovak audio  -> English text (task=translate).
 * ``POST /v1/auto``   -- autodetect language, no translation.
 
 All transcription endpoints accept a multipart form field named ``audio``
@@ -163,16 +162,6 @@ async def transcribe_en(
     """English audio in, English text out."""
     return await _do_transcribe(
         request, audio, language="en", translate=False, label="EN"
-    )
-
-
-@app.post("/v1/sk", dependencies=[Depends(auth_dep)])
-async def transcribe_sk(
-    request: Request, audio: Annotated[UploadFile, File(...)]
-) -> dict:
-    """Slovak audio in, English text out (Whisper ``task=translate``)."""
-    return await _do_transcribe(
-        request, audio, language="sk", translate=True, label="SK->EN"
     )
 
 

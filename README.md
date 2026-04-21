@@ -56,7 +56,6 @@ All routes under `/v1/`. Responses are JSON `{text, language, language_probabili
 | ------ | ------------- | ------------------------------------------------------ |
 | GET    | `/v1/health`  | Liveness + readiness probe.                            |
 | POST   | `/v1/en`      | English audio in -> English text.                      |
-| POST   | `/v1/sk`      | Slovak audio in -> English text (Whisper `translate`). |
 | POST   | `/v1/auto`    | Autodetect language, transcribe (no translation).      |
 
 All POST endpoints accept a multipart form field named `audio`. If
@@ -208,7 +207,7 @@ Trigger formats:
   and right variants). Releasing either the target or any modifier
   stops recording and sends.
 
-CLI flags override config values: `--endpoint /v1/sk`, `--server-url ...`,
+CLI flags override config values: `--endpoint /v1/en`, `--server-url ...`,
 `--trigger key:ctrl+g`, `--auth-token ...`, `--input-device "USB Mic"`,
 `--audio-format wav`, `--no-paste`, `--paste-delay-ms 100`.
 

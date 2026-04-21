@@ -7,7 +7,6 @@ server_url = "http://localhost:5005"
 # Which endpoint to POST to. One of:
 #   /v1/auto  - autodetect language, transcribe
 #   /v1/en    - force English transcription
-#   /v1/sk    - Slovak audio -> English text (translation)
 endpoint = "/v1/auto"
 
 # Push-to-talk trigger. Format: "<kind>:<value>".

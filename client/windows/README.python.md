@@ -185,7 +185,7 @@ Edit these five lines:
 
 ```toml
 server_url   = "http://SERVER_HOST:5005"   # e.g. http://192.168.1.50:5005
-endpoint     = "/v1/auto"                  # or /v1/en or /v1/sk
+endpoint     = "/v1/auto"                  # or /v1/en
 ptt_key      = "ctrl_r"                    # see section 3
 auth_token   = ""                          # only if server requires it
 input_device = ""                          # empty = Windows default mic
@@ -243,7 +243,7 @@ Hello, this is a test transcription.
 One-shot overrides without editing the config:
 
 ```powershell
-python -m ghostscribe_client --endpoint /v1/sk
+python -m ghostscribe_client --endpoint /v1/en
 python -m ghostscribe_client --server-url http://192.168.1.50:5005
 python -m ghostscribe_client --ptt-key f12
 python -m ghostscribe_client --input-device "USB Mic"

@@ -39,7 +39,7 @@ Next to `ghostscribe-client.exe`, drop a `config.toml`. Start from
 
 ```toml
 server_url     = "http://SERVER_HOST:5005"
-endpoint       = "/v1/auto"       # /v1/auto | /v1/en | /v1/sk
+endpoint       = "/v1/auto"       # /v1/auto | /v1/en
 auth_token     = ""               # same value as the Linux client
 input_device   = ""               # empty = Windows default mic
 audio_format   = "flac"           # "flac" (smaller) or "wav"
@@ -54,7 +54,7 @@ above.
 | Key              | Default             | Notes                                                                                   |
 | ---------------- | ------------------- | --------------------------------------------------------------------------------------- |
 | `server_url`     | `http://localhost:5005` | No trailing slash.                                                                      |
-| `endpoint`       | `/v1/auto`          | `/v1/en` forces English, `/v1/sk` translates Slovak -> English.                          |
+| `endpoint`       | `/v1/auto`          | `/v1/en` forces English transcription.                                                   |
 | `auth_token`     | empty               | Sent as `X-Auth-Token` when non-empty. **Do not commit your real token.**               |
 | `input_device`   | empty               | Case-insensitive substring of the mic's Windows name. Empty = system default.           |
 | `audio_format`   | `flac`              | `flac` halves payload vs raw WAV. Use `wav` only if FLAC gives the server trouble.      |
