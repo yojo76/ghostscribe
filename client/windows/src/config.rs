@@ -9,6 +9,10 @@ struct RawConfig {
     endpoint: Option<String>,
     auth_token: Option<String>,
     input_device: Option<String>,
+    trigger: Option<String>,
+    audio_format: Option<String>,
+    auto_paste: Option<bool>,
+    paste_delay_ms: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -17,6 +21,10 @@ pub struct ClientConfig {
     pub endpoint: String,
     pub auth_token: String,
     pub input_device: String,
+    pub trigger: String,
+    pub audio_format: String,
+    pub auto_paste: bool,
+    pub paste_delay_ms: u32,
     pub source_path: Option<PathBuf>,
 }
 
@@ -40,6 +48,10 @@ fn defaults() -> ClientConfig {
         endpoint: "/v1/auto".to_string(),
         auth_token: String::new(),
         input_device: String::new(),
+        trigger: "key:ctrl+g".to_string(),
+        audio_format: "flac".to_string(),
+        auto_paste: true,
+        paste_delay_ms: 50,
         source_path: None,
     }
 }
@@ -87,6 +99,18 @@ pub fn load(explicit: Option<&Path>) -> Result<ClientConfig> {
             }
             if let Some(v) = raw.input_device {
                 cfg.input_device = v;
+            }
+            if let Some(v) = raw.trigger {
+                cfg.trigger = v;
+            }
+            if let Some(v) = raw.audio_format {
+                cfg.audio_format = v;
+            }
+            if let Some(v) = raw.auto_paste {
+                cfg.auto_paste = v;
+            }
+            if let Some(v) = raw.paste_delay_ms {
+                cfg.paste_delay_ms = v;
             }
             cfg.source_path = Some(path);
             break;

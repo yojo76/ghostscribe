@@ -186,3 +186,36 @@ pub fn encode_wav(samples: &[i16]) -> Result<Vec<u8>> {
     }
     Ok(cursor.into_inner())
 }
+
+pub fn encode_flac(samples: &[i16]) -> Result<Vec<u8>> {
+    use flacenc::bitsink::MemSink;
+    use flacenc::component::BitRepr;
+    use flacenc::config::Encoder as FlacConfig;
+    use flacenc::encode::encode_with_fixed_block_size;
+
+    let samples_i32: Vec<i32> = samples.iter().map(|&s| s as i32).collect();
+    let stream = encode_with_fixed_block_size(
+        &FlacConfig::default(),
+        samples_i32,
+        4096,
+        1,
+        16,
+        TARGET_SAMPLE_RATE as usize,
+    )
+    .map_err(|e| anyhow!("FLAC encode error: {e:?}"))?;
+
+    let mut sink = MemSink::<u8>::new();
+    stream
+        .write(&mut sink)
+        .map_err(|e| anyhow!("FLAC write error: {e:?}"))?;
+    Ok(sink.into_inner())
+}
+
+/// Returns (encoded_bytes, filename, mime_type).
+pub fn encode(samples: &[i16], format: &str) -> Result<(Vec<u8>, &'static str, &'static str)> {
+    match format {
+        "flac" => encode_flac(samples).map(|b| (b, "recording.flac", "audio/flac")),
+        "wav"  => encode_wav(samples).map(|b| (b, "recording.wav", "audio/wav")),
+        other  => Err(anyhow!("unknown audio_format {other:?}; use 'flac' or 'wav'")),
+    }
+}

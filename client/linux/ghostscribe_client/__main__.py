@@ -261,6 +261,24 @@ def encode_audio(
 # --------------------------------------------------------------------------- #
 
 
+def read_clipboard() -> str | None:
+    """Return current X11 CLIPBOARD contents, or None if unavailable/empty."""
+    xclip = shutil.which("xclip")
+    if xclip is None:
+        return None
+    try:
+        result = subprocess.run(
+            [xclip, "-selection", "clipboard", "-o"],
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.decode("utf-8", errors="replace")
+        return None
+    except subprocess.SubprocessError:
+        return None
+
+
 def copy_to_clipboard(text: str) -> bool:
     """Push ``text`` onto the X11 CLIPBOARD via ``xclip``. Returns True on success."""
     xclip = shutil.which("xclip")
@@ -349,10 +367,15 @@ def submit(
 
     pasted = False
     if cfg.auto_paste:
+        saved = read_clipboard()
         if copy_to_clipboard(text):
             try:
                 inject_paste(cfg.paste_delay_ms)
                 pasted = True
+                time.sleep(cfg.paste_delay_ms / 1000.0)
+                if saved is not None:
+                    copy_to_clipboard(saved)
+                    _eprint("[paste] clipboard restored")
             except Exception as exc:
                 _eprint(f"[paste] Ctrl+V injection failed: {exc}")
     if pasted:

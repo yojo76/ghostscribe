@@ -43,9 +43,9 @@ fn build_multipart(boundary: &str, filename: &str, mime: &str, payload: &[u8]) -
     body
 }
 
-pub fn submit(cfg: &ClientConfig, wav: &[u8]) -> Result<Transcript> {
+pub fn submit(cfg: &ClientConfig, audio: &[u8], filename: &str, mime: &str) -> Result<Transcript> {
     let boundary = random_boundary();
-    let body = build_multipart(&boundary, "recording.wav", "audio/wav", wav);
+    let body = build_multipart(&boundary, filename, mime, audio);
     let bytes_sent = body.len();
 
     let agent = ureq::AgentBuilder::new()

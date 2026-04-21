@@ -17,3 +17,20 @@ auth_token = ""
 # Optional. Audio input device name (substring match, case-insensitive).
 # Leave empty to use the system default mic.
 input_device = ""
+
+# Audio encoding format sent to the server. "flac" is smaller (~half of WAV).
+# Use "wav" if you encounter compatibility issues.
+audio_format = "flac"
+
+# Push-to-talk trigger. Format: key:[modifier+]<keyname>
+# Modifier:  ctrl, shift, alt
+# Key names: a-z, f1-f24, pause, scroll, insert, delete, home, end, etc.
+# Examples:  key:ctrl+g   key:ctrl+r   key:f13   key:pause
+trigger = "key:ctrl+g"
+
+# Automatically paste the transcript into the focused window via Ctrl+V.
+# The previous clipboard contents are saved and restored afterwards.
+auto_paste = true
+
+# Milliseconds to wait before injecting Ctrl+V (give the window focus time).
+paste_delay_ms = 50
