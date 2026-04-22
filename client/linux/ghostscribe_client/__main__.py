@@ -300,18 +300,97 @@ def copy_to_clipboard(text: str) -> bool:
 _paste_kb: keyboard.Controller | None = None
 
 
-def inject_paste(delay_ms: int) -> None:
-    """Simulate Ctrl+V in the currently focused window."""
+# Class names returned by ``xdotool getactivewindow getwindowclassname`` for
+# terminal emulators that ignore plain Ctrl+V and want Ctrl+Shift+V instead.
+# Compared case-insensitively. Add aggressively; a false positive only means
+# the user gets Ctrl+Shift+V in a non-terminal, which all major editors also
+# accept as paste.
+_TERMINAL_CLASSES: frozenset[str] = frozenset(
+    s.lower()
+    for s in (
+        # GNOME / Mate / Cinnamon
+        "gnome-terminal-server",
+        "Gnome-terminal",
+        "mate-terminal",
+        "Mate-terminal",
+        "Tilix",
+        "tilix",
+        "Terminator",
+        "terminator",
+        # KDE
+        "konsole",
+        "Konsole",
+        "yakuake",
+        "Yakuake",
+        # X classics
+        "xterm",
+        "XTerm",
+        "UXTerm",
+        "URxvt",
+        "urxvt",
+        "rxvt",
+        "Rxvt",
+        # Modern GPU terminals
+        "Alacritty",
+        "alacritty",
+        "kitty",
+        "Kitty",
+        "wezterm",
+        "WezTerm",
+        "org.wezfurlong.wezterm",
+        "foot",
+        # Cygwin/MSYS-style on Linux
+        "mintty",
+    )
+)
+
+
+def detect_terminal_focus() -> bool:
+    """Return True if the X11 foreground window looks like a terminal emulator.
+
+    Uses ``xdotool getactivewindow getwindowclassname``; if xdotool is missing
+    or the call fails we silently return False, which preserves the previous
+    Ctrl+V-only behaviour.
+    """
+    xdotool = shutil.which("xdotool")
+    if xdotool is None:
+        return False
+    try:
+        result = subprocess.run(
+            [xdotool, "getactivewindow", "getwindowclassname"],
+            capture_output=True,
+            timeout=2,
+        )
+    except subprocess.SubprocessError:
+        return False
+    if result.returncode != 0:
+        return False
+    cls = result.stdout.decode("utf-8", errors="replace").strip()
+    return cls.lower() in _TERMINAL_CLASSES
+
+
+def inject_paste(delay_ms: int, use_shift: bool = False) -> None:
+    """Simulate Ctrl+V (or Ctrl+Shift+V) in the currently focused window.
+
+    Most terminal emulators (GNOME Terminal, Konsole, xterm, kitty, alacritty,
+    wezterm, ...) intentionally ignore plain Ctrl+V because Ctrl+V is a valid
+    line-discipline character (literal-next, ``^V``); they bind paste to
+    Ctrl+Shift+V instead. Pass ``use_shift=True`` for those targets.
+    """
     global _paste_kb
     if _paste_kb is None:
         _paste_kb = keyboard.Controller()
     if delay_ms > 0:
         time.sleep(delay_ms / 1000.0)
     _paste_kb.press(keyboard.Key.ctrl)
+    if use_shift:
+        _paste_kb.press(keyboard.Key.shift)
     try:
         _paste_kb.press("v")
         _paste_kb.release("v")
     finally:
+        if use_shift:
+            _paste_kb.release(keyboard.Key.shift)
         _paste_kb.release(keyboard.Key.ctrl)
 
 
@@ -365,20 +444,23 @@ def submit(
         return
 
     pasted = False
+    combo_used = "ctrl+v"
     if cfg.auto_paste:
         saved = read_clipboard()
         if copy_to_clipboard(text):
+            use_shift = detect_terminal_focus()
+            combo_used = "ctrl+shift+v" if use_shift else "ctrl+v"
             try:
-                inject_paste(cfg.paste_delay_ms)
+                inject_paste(cfg.paste_delay_ms, use_shift=use_shift)
                 pasted = True
                 time.sleep(cfg.paste_delay_ms / 1000.0)
                 if saved is not None:
                     copy_to_clipboard(saved)
                     _eprint("[paste] clipboard restored")
             except Exception as exc:
-                _eprint(f"[paste] Ctrl+V injection failed: {exc}")
+                _eprint(f"[paste] {combo_used} injection failed: {exc}")
     if pasted:
-        _eprint("[paste] pasted into focused window:")
+        _eprint(f"[paste] pasted via {combo_used} into focused window:")
     else:
         _eprint("[recv] transcript:")
     _eprint(text)
@@ -415,6 +497,11 @@ def run(cfg: ClientConfig) -> int:
 
     if cfg.auto_paste and shutil.which("xclip") is None:
         _eprint("[warn] auto_paste is on but xclip is not installed.")
+    if cfg.auto_paste and shutil.which("xdotool") is None:
+        _eprint(
+            "[warn] xdotool not found; terminal-focused windows will receive "
+            "Ctrl+V instead of Ctrl+Shift+V. Install with: sudo apt install xdotool"
+        )
 
     recorder = Recorder(device)
     try:

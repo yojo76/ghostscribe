@@ -57,6 +57,7 @@ All routes under `/v1/`. Responses are JSON `{text, language, language_probabili
 | GET    | `/v1/health`  | Liveness + readiness probe.                            |
 | POST   | `/v1/en`      | English audio in -> English text.                      |
 | POST   | `/v1/auto`    | Autodetect language, transcribe (no translation).      |
+| GET    | `/metrics`    | Prometheus exposition: request count, request/inference/audio durations. |
 
 All POST endpoints accept a multipart form field named `audio`. If
 `GHOSTSCRIBE_AUTH_TOKEN` is set on the server, clients must send an
@@ -162,12 +163,18 @@ cp config.example.toml config.toml
 $EDITOR config.toml
 ```
 
-On Linux you also need PortAudio for `sounddevice` and `xclip` for the
-clipboard push:
+On Linux you also need PortAudio for `sounddevice`, `xclip` for the
+clipboard push, and `xdotool` so the client can detect when the focused
+window is a terminal emulator and switch to `Ctrl+Shift+V`:
 
 ```bash
-sudo apt install libportaudio2 xclip
+sudo apt install libportaudio2 xclip xdotool
 ```
+
+`xdotool` is optional -- the client will fall back to plain `Ctrl+V`
+everywhere if it is missing -- but most terminal emulators (GNOME
+Terminal, Konsole, kitty, alacritty, wezterm, ...) intentionally ignore
+`Ctrl+V`, so you'll want it installed if you dictate into terminals.
 
 ### Usage
 
@@ -176,9 +183,12 @@ python -m ghostscribe_client
 ```
 
 Hold the configured trigger (default: mouse button `x2` -- the thumb
-"forward" button). Speak. Release. The transcript is pushed onto the X11
-CLIPBOARD via `xclip` and then `Ctrl+V` is simulated into whatever window
-has focus. Timing and the full transcript also print to stderr:
+"forward" button). Speak. Release. The current X11 CLIPBOARD is saved,
+the transcript is pushed onto the CLIPBOARD via `xclip`, paste is
+simulated into the focused window (`Ctrl+V`, or `Ctrl+Shift+V` when the
+focused window is a known terminal emulator), and after `paste_delay_ms`
+the original clipboard contents are restored. Timing and the full
+transcript also print to stderr:
 
 ```
 GhostScribe client -> http://localhost:5005/v1/auto
@@ -192,7 +202,8 @@ Hold the trigger and speak. Release to transcribe. Ctrl+C to quit.
 [rec] ...
 [rec] stopped, 96 kB raw
 [recv] 54 kB in 430 ms (lang=en p=0.99)
-[paste] pasted into focused window:
+[paste] clipboard restored
+[paste] pasted via ctrl+v into focused window:
 Hello, this is a test transcription.
 ```
 
@@ -216,22 +227,26 @@ CLI flags override config values: `--endpoint /v1/en`, `--server-url ...`,
 - Global hooks (keyboard and mouse) work on **X11** (Linux Mint Cinnamon's
   default). On **Wayland** `pynput` cannot install a global hook; run
   the client in a terminal that has focus, or switch the session to X11.
-- Auto-paste **overwrites the system clipboard** with the transcript --
-  whatever you had copied is gone. The Save-Paste-Restore behavior that
-  backs up and restores the clipboard lands in a later commit.
-- Auto-paste uses `Ctrl+V`, which most **terminal emulators** ignore in
-  favour of `Ctrl+Shift+V`. Terminal detection + bracketed-paste lands
-  with Save-Paste-Restore.
+- Auto-paste preserves your clipboard: it saves the current X11
+  CLIPBOARD selection, sets the transcript, injects paste, and restores
+  the original after `paste_delay_ms`. If you copy something **between**
+  the paste and the restore, the restore will clobber it.
+- The auto-paste combo is selected per-press via
+  `xdotool getactivewindow getwindowclassname`: terminal emulators
+  (GNOME Terminal, Konsole, kitty, alacritty, wezterm, xterm, ...)
+  receive `Ctrl+Shift+V`; everything else receives `Ctrl+V`. Without
+  `xdotool` installed everything falls back to plain `Ctrl+V`.
 
 ## Explicitly deferred (coming in later commits)
 
-- Save-Paste-Restore clipboard injection with configurable paste delay.
-- Mouse Button 8/9 PTT (with `pynput` + `python-evdev` backends).
-- Terminal detection and bracketed-paste fallback.
+- Mouse Button 8/9 PTT on **Windows** (Linux already supports it via
+  `mouse:x2`).
+- Wayland support (`python-evdev` backend on Linux).
+- Bracketed-paste fallback for terminals that disable Ctrl+Shift+V.
 - WebSocket streaming (`/v1/stream`) for word-level incremental output.
 - Client-side VAD (server-side VAD is already enabled).
-- TLS, IP allowlists, Prometheus metrics, system tray icon.
-- Rust client rewrite.
+- Active-window-title context injection (Whisper `initial_prompt`).
+- TLS termination, per-token rate limits, system tray icon, installer.
 
 ## Security note
 
