@@ -24,6 +24,7 @@ DEFAULTS: dict[str, object] = {
     "server_url": "http://localhost:5005",
     "endpoint": "/v1/auto",
     "trigger": "mouse:x2",
+    "one_key_trigger": "",
     "auth_token": "",
     "input_device": "",
     "audio_format": "flac",
@@ -37,6 +38,7 @@ class ClientConfig:
     server_url: str
     endpoint: str
     trigger: str
+    one_key_trigger: str = ""
     auth_token: str = ""
     input_device: str = ""
     audio_format: str = "flac"
@@ -97,6 +99,7 @@ def load_config(explicit: Path | None = None) -> ClientConfig:
         server_url=str(merged["server_url"]),
         endpoint=str(merged["endpoint"]),
         trigger=str(merged["trigger"]),
+        one_key_trigger=str(merged["one_key_trigger"]),
         auth_token=str(merged["auth_token"]),
         input_device=str(merged["input_device"]),
         audio_format=str(merged["audio_format"]).lower(),

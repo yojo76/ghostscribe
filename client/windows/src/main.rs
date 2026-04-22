@@ -3,12 +3,6 @@
 //! Hold the configured trigger (default Ctrl+G) to record from the microphone.
 //! Release either key to encode WAV, POST to the server, and paste the transcript.
 
-mod audio;
-mod config;
-mod hotkey;
-mod paste;
-mod upload;
-
 use std::fs;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
@@ -19,9 +13,10 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 
-use crate::audio::Recorder;
-use crate::config::ClientConfig;
-use crate::hotkey::{parse_trigger, run_hook, HotkeyEvent};
+use ghostscribe_client::audio::{self, Recorder};
+use ghostscribe_client::config::{self, ClientConfig};
+use ghostscribe_client::hotkey::{parse_one_key_trigger, parse_trigger, run_hook, HotkeyEvent};
+use ghostscribe_client::{paste, upload};
 
 // Win32 process creation flags. Hand-coded to avoid pulling another `windows`
 // crate feature just for two constants.
@@ -134,6 +129,7 @@ fn main() -> Result<()> {
     let cfg = config::load(args.config.as_deref())?;
 
     let trigger = parse_trigger(&cfg.trigger)?;
+    let one_key = parse_one_key_trigger(&cfg.one_key_trigger)?;
 
     eprintln!("GhostScribe client -> {}", cfg.url());
     match &cfg.source_path {
@@ -141,6 +137,10 @@ fn main() -> Result<()> {
         None => eprintln!("config:   (defaults, no config file found)"),
     }
     eprintln!("trigger:  {}", cfg.trigger);
+    eprintln!(
+        "one_key:  {}",
+        if cfg.one_key_trigger.is_empty() { "off" } else { cfg.one_key_trigger.as_str() }
+    );
     eprintln!("format:   {}", cfg.audio_format);
     eprintln!("auth:     {}", if cfg.has_auth() { "on" } else { "off" });
     eprintln!("paste:    {} (delay {} ms)", if cfg.auto_paste { "on" } else { "off" }, cfg.paste_delay_ms);
@@ -151,7 +151,7 @@ fn main() -> Result<()> {
 
     let (tx, rx) = channel::<HotkeyEvent>();
     thread::spawn(move || {
-        if let Err(e) = run_hook(tx, trigger) {
+        if let Err(e) = run_hook(tx, trigger, one_key) {
             eprintln!("[fatal] keyboard hook failed: {e}");
             std::process::exit(1);
         }
@@ -162,6 +162,10 @@ fn main() -> Result<()> {
             HotkeyEvent::Press => {
                 recorder.begin();
                 eprintln!("[rec] ...");
+            }
+            HotkeyEvent::Cancel => {
+                recorder.cancel();
+                eprintln!("[rec] cancelled");
             }
             HotkeyEvent::Release => {
                 match recorder.end() {
@@ -206,7 +210,10 @@ fn handle_upload(cfg: &ClientConfig, samples: Vec<i16>) {
 
                 if cfg.auto_paste {
                     let saved = paste::get_clipboard();
-                    match paste::set_clipboard(&t.text) {
+                    // Trailing space so consecutive takes don't butt up
+                    // against each other in the target field.
+                    let pasted = format!("{} ", t.text);
+                    match paste::set_clipboard(&pasted) {
                         Err(e) => eprintln!("[paste] clipboard write failed: {e}"),
                         Ok(()) => {
                             paste::inject_ctrl_v(cfg.paste_delay_ms);

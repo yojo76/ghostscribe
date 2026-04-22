@@ -1,0 +1,100 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  server:
+    name: server (pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            server/pyproject.toml
+            server/requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # conftest imports the app module, which transitively imports
+          # faster_whisper at module scope; install the full runtime.
+          # Tests use FakeEngine so the model is never loaded.
+          pip install -e ".[dev]"
+
+      - name: Run tests
+        run: pytest -q
+
+  linux-client:
+    name: linux-client (pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client/linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps for sounddevice + pynput
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            portaudio19-dev \
+            libportaudio2 \
+            xclip \
+            xdotool \
+            xvfb
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: client/linux/pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run tests (under xvfb so pynput/X11 imports don't blow up)
+        run: xvfb-run -a pytest -q
+
+  windows-client:
+    name: windows-client (cargo test)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: client/windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            client/windows/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('client/windows/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build
+        run: cargo build --verbose
+
+      - name: Run tests
+        run: cargo test --verbose

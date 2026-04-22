@@ -136,6 +136,15 @@ impl Recorder {
         let resampled = resample_linear(&mono, g.src_sample_rate, TARGET_SAMPLE_RATE);
         Some(resampled)
     }
+
+    /// Discard the in-progress take without running downmix/resample or
+    /// returning samples. Used when a one-key recording is cancelled by a
+    /// foreign keystroke.
+    pub fn cancel(&self) {
+        let mut g = self.shared.lock().unwrap();
+        g.active = false;
+        g.buffer.clear();
+    }
 }
 
 fn downmix(samples: &[i16], channels: u16) -> Vec<i16> {
@@ -222,5 +231,79 @@ pub fn encode(samples: &[i16], format: &str) -> Result<(Vec<u8>, &'static str, &
         "flac" => encode_flac(samples).map(|b| (b, "recording.flac", "audio/flac")),
         "wav"  => encode_wav(samples).map(|b| (b, "recording.wav", "audio/wav")),
         other  => Err(anyhow!("unknown audio_format {other:?}; use 'flac' or 'wav'")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tone(seconds: f32, freq: f32) -> Vec<i16> {
+        let n = (TARGET_SAMPLE_RATE as f32 * seconds) as usize;
+        (0..n)
+            .map(|i| {
+                let t = i as f32 / TARGET_SAMPLE_RATE as f32;
+                ((2.0 * std::f32::consts::PI * freq * t).sin() * 16_000.0) as i16
+            })
+            .collect()
+    }
+
+    #[test]
+    fn encode_wav_starts_with_riff_magic() {
+        let samples = tone(0.1, 440.0);
+        let (bytes, filename, mime) = encode(&samples, "wav").unwrap();
+        assert_eq!(filename, "recording.wav");
+        assert_eq!(mime, "audio/wav");
+        assert_eq!(&bytes[..4], b"RIFF");
+        assert_eq!(&bytes[8..12], b"WAVE");
+    }
+
+    #[test]
+    fn encode_flac_starts_with_flac_magic() {
+        let samples = tone(0.1, 440.0);
+        let (bytes, filename, mime) = encode(&samples, "flac").unwrap();
+        assert_eq!(filename, "recording.flac");
+        assert_eq!(mime, "audio/flac");
+        assert_eq!(&bytes[..4], b"fLaC");
+    }
+
+    #[test]
+    fn encode_unknown_format_returns_err() {
+        let err = encode(&[0i16; 16], "mp3").unwrap_err();
+        assert!(err.to_string().contains("unknown audio_format"));
+    }
+
+    #[test]
+    fn downmix_passes_mono_through_unchanged() {
+        let mono = vec![1i16, 2, 3, 4];
+        assert_eq!(downmix(&mono, 1), mono);
+    }
+
+    #[test]
+    fn downmix_stereo_averages_channels() {
+        // interleaved L,R,L,R
+        let stereo = vec![10i16, 20, -100, 100];
+        let mono = downmix(&stereo, 2);
+        assert_eq!(mono, vec![15, 0]);
+    }
+
+    #[test]
+    fn resample_passthrough_when_rates_match() {
+        let src = vec![1i16, 2, 3, 4, 5];
+        assert_eq!(resample_linear(&src, 16_000, 16_000), src);
+    }
+
+    #[test]
+    fn resample_handles_empty_input() {
+        let empty: Vec<i16> = Vec::new();
+        assert_eq!(resample_linear(&empty, 48_000, 16_000), empty);
+    }
+
+    #[test]
+    fn resample_downsample_shrinks_length_proportionally() {
+        // 48 kHz -> 16 kHz: output should be ~1/3 the length
+        let src: Vec<i16> = (0..48).map(|i| i as i16).collect();
+        let out = resample_linear(&src, 48_000, 16_000);
+        assert_eq!(out.len(), 16);
     }
 }

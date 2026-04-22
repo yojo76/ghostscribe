@@ -150,3 +150,92 @@ fn extract_number(json: &str, key: &str) -> Option<f64> {
         .unwrap_or(tail.len());
     tail[..end].parse::<f64>().ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn random_boundary_has_expected_shape() {
+        let b = random_boundary();
+        assert!(b.starts_with("----ghostscribe-"));
+        let suffix = &b["----ghostscribe-".len()..];
+        assert_eq!(suffix.len(), 16);
+        assert!(suffix.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn random_boundary_is_probabilistically_unique() {
+        let a = random_boundary();
+        let b = random_boundary();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn build_multipart_contains_headers_and_payload() {
+        let payload = b"hello-audio";
+        let body = build_multipart("xBOUNDARYx", "recording.wav", "audio/wav", payload);
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("--xBOUNDARYx\r\n"));
+        assert!(text.contains("Content-Disposition: form-data; name=\"audio\"; filename=\"recording.wav\"\r\n"));
+        assert!(text.contains("Content-Type: audio/wav\r\n\r\n"));
+        assert!(text.contains("hello-audio"));
+        assert!(text.ends_with("\r\n--xBOUNDARYx--\r\n"));
+    }
+
+    #[test]
+    fn parse_response_extracts_all_fields() {
+        let json = r#"{"text":"hello world","language":"en","language_probability":0.97}"#;
+        let (text, lang, prob) = parse_response(json).unwrap();
+        assert_eq!(text, "hello world");
+        assert_eq!(lang, "en");
+        assert!((prob - 0.97).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parse_response_defaults_when_fields_missing() {
+        let (text, lang, prob) = parse_response("{}").unwrap();
+        assert_eq!(text, "");
+        assert_eq!(lang, "?");
+        assert_eq!(prob, 0.0);
+    }
+
+    #[test]
+    fn extract_string_handles_escape_sequences() {
+        let json = r#"{"text":"line1\nline2\tend\"quoted\""}"#;
+        let text = extract_string(json, "text").unwrap();
+        assert_eq!(text, "line1\nline2\tend\"quoted\"");
+    }
+
+    #[test]
+    fn extract_string_handles_unicode_escape() {
+        let json = r#"{"text":"café"}"#;
+        assert_eq!(extract_string(json, "text").unwrap(), "café");
+    }
+
+    #[test]
+    fn extract_string_returns_none_when_key_absent() {
+        assert!(extract_string(r#"{"other":"x"}"#, "text").is_none());
+    }
+
+    #[test]
+    fn extract_number_ignores_trailing_delimiters() {
+        assert_eq!(
+            extract_number(r#"{"x":0.5,"y":1}"#, "x").unwrap(),
+            0.5
+        );
+        assert_eq!(
+            extract_number(r#"{"x":42}"#, "x").unwrap(),
+            42.0
+        );
+        assert_eq!(
+            extract_number(r#"{"x": 3.14 }"#, "x").unwrap(),
+            3.14
+        );
+    }
+
+    #[test]
+    fn extract_number_returns_none_on_non_numeric() {
+        assert!(extract_number(r#"{"x":"hello"}"#, "x").is_none());
+    }
+}

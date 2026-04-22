@@ -38,14 +38,15 @@ Next to `ghostscribe-client.exe`, drop a `config.toml`. Start from
 `config.example.toml` in this folder:
 
 ```toml
-server_url     = "http://SERVER_HOST:5005"
-endpoint       = "/v1/auto"       # /v1/auto | /v1/en
-auth_token     = ""               # same value as the Linux client
-input_device   = ""               # empty = Windows default mic
-audio_format   = "flac"           # "flac" (smaller) or "wav"
-trigger        = "key:ctrl+g"     # key:[modifier+]<keyname>
-auto_paste     = true             # false => stdout only
-paste_delay_ms = 50               # ms before Ctrl+V and before restore
+server_url      = "http://SERVER_HOST:5005"
+endpoint        = "/v1/auto"       # /v1/auto | /v1/en
+auth_token      = ""               # same value as the Linux client
+input_device    = ""               # empty = Windows default mic
+audio_format    = "flac"           # "flac" (smaller) or "wav"
+trigger         = "key:ctrl+g"     # key:[modifier+]<keyname>
+one_key_trigger = ""               # empty, or key:ctrl|alt|f1..f24
+auto_paste      = true             # false => stdout only
+paste_delay_ms  = 50               # ms before Ctrl+V and before restore
 ```
 
 All fields are optional; anything you omit falls back to the defaults
@@ -59,8 +60,19 @@ above.
 | `input_device`   | empty               | Case-insensitive substring of the mic's Windows name. Empty = system default.           |
 | `audio_format`   | `flac`              | `flac` halves payload vs raw WAV. Use `wav` only if FLAC gives the server trouble.      |
 | `trigger`        | `key:ctrl+g`        | Modifiers: `ctrl`, `shift`, `alt`. Keys: `a`-`z`, `0`-`9`, `f1`-`f24`, `pause`, etc.    |
+| `one_key_trigger`| empty               | Optional single-key PTT. Allowed: `key:ctrl`, `key:alt`, `key:f1`-`key:f24`. Pressing a foreign key mid-record cancels the take; keys from `trigger` are neutral. See note below. |
 | `auto_paste`     | `true`              | If `true`: save clipboard -> set transcript -> `Ctrl+V` -> restore clipboard.            |
 | `paste_delay_ms` | `50`                | Applied both before injecting `Ctrl+V` and before restoring the clipboard.              |
+
+**One-key trigger semantics.** When `one_key_trigger` is set, the client
+accepts two ways to record: the chord in `trigger`, or the single key in
+`one_key_trigger`. First to fully engage wins; the other path is inert for
+the duration of that take. Press alone -> record; release alone -> send.
+Press any other key while recording via one-key -> cancel the take (no
+upload) and lock out until the one-key is released. Keys that are part of
+the configured `trigger` (main key and modifier) are treated as neutral
+and never cancel. Shift, letters, and digits are rejected as one-key
+triggers because they would hijack normal typing.
 
 Config search order:
 
@@ -118,6 +130,7 @@ Banner:
 GhostScribe client -> http://SERVER_HOST:5005/v1/auto
 config:   C:\...\config.toml
 trigger:  key:ctrl+g
+one_key:  off
 format:   flac
 auth:     on
 paste:    on (delay 50 ms)

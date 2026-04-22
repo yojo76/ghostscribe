@@ -127,6 +127,46 @@ class MouseTrigger:
 Trigger = KeyTrigger | MouseTrigger
 
 
+@dataclass(frozen=True)
+class OneKeyLinuxTrigger:
+    """Single-key PTT trigger. Restricted to modifier families and F-keys."""
+    key_family: frozenset[Any]
+    label: str
+
+
+def parse_one_key_trigger(spec: str) -> OneKeyLinuxTrigger | None:
+    """Return an `OneKeyLinuxTrigger`, or `None` when spec is empty/disabled."""
+    s = spec.strip()
+    if not s:
+        return None
+    lower = s.lower()
+    if not lower.startswith("key:"):
+        raise ValueError(
+            f"one_key_trigger must start with 'key:' (got {s!r})"
+        )
+    rest = lower[4:]
+    if "+" in rest:
+        raise ValueError(
+            f"one_key_trigger cannot be a chord (got {s!r}); use trigger= for chords"
+        )
+    # Intentionally restricted: ctrl and alt only from modifier families.
+    # shift triggers on every capital letter; super conflicts with WM shortcuts.
+    if rest == "ctrl":
+        return OneKeyLinuxTrigger(key_family=_MODIFIER_FAMILIES["ctrl"], label=lower)
+    if rest == "alt":
+        return OneKeyLinuxTrigger(key_family=_MODIFIER_FAMILIES["alt"], label=lower)
+    if rest.startswith("f") and rest[1:].isdigit():
+        n = int(rest[1:])
+        if 1 <= n <= 24:
+            fkey = getattr(keyboard.Key, f"f{n}", None)
+            if fkey is not None:
+                return OneKeyLinuxTrigger(key_family=frozenset({fkey}), label=lower)
+    raise ValueError(
+        f"one_key_trigger must be one of: key:ctrl, key:alt, key:f1..key:f24 "
+        f"(got {s!r}). Letters, digits, shift, and super are intentionally rejected."
+    )
+
+
 def _resolve_target_key(name: str) -> Any:
     if not name:
         raise ValueError("empty key name")
@@ -234,6 +274,12 @@ class Recorder:
         if not chunks:
             return None
         return np.concatenate(chunks, axis=0)
+
+    def cancel(self) -> None:
+        """Discard the current take without returning audio."""
+        self._active.clear()
+        with self._lock:
+            self._chunks.clear()
 
 
 # --------------------------------------------------------------------------- #
@@ -447,7 +493,9 @@ def submit(
     combo_used = "ctrl+v"
     if cfg.auto_paste:
         saved = read_clipboard()
-        if copy_to_clipboard(text):
+        # Trailing space so back-to-back takes don't concatenate in the
+        # target field. Only applied to the pasted copy — not to _eprint().
+        if copy_to_clipboard(text + " "):
             use_shift = detect_terminal_focus()
             combo_used = "ctrl+shift+v" if use_shift else "ctrl+v"
             try:
@@ -478,6 +526,12 @@ def run(cfg: ClientConfig) -> int:
         _eprint(f"[fatal] {exc}")
         return 2
 
+    try:
+        one_key = parse_one_key_trigger(cfg.one_key_trigger)
+    except ValueError as exc:
+        _eprint(f"[fatal] {exc}")
+        return 2
+
     device = _resolve_input_device(cfg.input_device)
 
     _eprint(f"GhostScribe client -> {cfg.url}")
@@ -486,6 +540,7 @@ def run(cfg: ClientConfig) -> int:
     else:
         _eprint("config:   (defaults, no config file found)")
     _eprint(f"trigger:  {trig.label}")
+    _eprint(f"one_key:  {one_key.label if one_key else 'off'}")
     _eprint(f"device:   {device if device is not None else '(system default)'}")
     _eprint(f"format:   {cfg.audio_format}")
     _eprint(
@@ -545,7 +600,22 @@ def run(cfg: ClientConfig) -> int:
             _eprint(f"[rec] stopped, {n * 2 / 1024:.0f} kB raw")
             jobs.put(audio)
 
+        def _cancel_recording() -> None:
+            if not recording.is_set():
+                return
+            recording.clear()
+            recorder.cancel()
+            _eprint("[rec] cancelled")
+
         listeners: list[Any] = []
+
+        # State machine shared across all listeners:
+        #   "idle"    – nothing active
+        #   "chord"   – recording started by the chord/mouse trigger
+        #   "one_key" – recording started by one_key_trigger; cancellable
+        #   "lockout" – one_key take cancelled; wait for one-key release
+        _mode = "idle"
+        _mode_lock = threading.Lock()
 
         if isinstance(trig, MouseTrigger):
             target_button = trig.button
@@ -553,21 +623,24 @@ def run(cfg: ClientConfig) -> int:
             def on_click(
                 _x: int, _y: int, button: mouse.Button, pressed: bool
             ) -> None:
+                nonlocal _mode
                 if button != target_button:
                     return
-                if pressed:
-                    start_recording()
-                else:
-                    stop_recording()
+                with _mode_lock:
+                    if pressed and _mode == "idle":
+                        _mode = "chord"
+                        start_recording()
+                    elif not pressed and _mode == "chord":
+                        _mode = "idle"
+                        stop_recording()
 
             listeners.append(mouse.Listener(on_click=on_click))
 
         else:  # KeyTrigger
             held: set[Any] = set()
-            held_lock = threading.Lock()
             key_trig: KeyTrigger = trig
 
-            def _involved(key: Any) -> bool:
+            def _chord_involved(key: Any) -> bool:
                 if key == key_trig.target:
                     return True
                 for fam in key_trig.modifiers:
@@ -586,22 +659,69 @@ def run(cfg: ClientConfig) -> int:
             kb_listener: keyboard.Listener | None = None
 
             def on_press(key: Any) -> None:
+                nonlocal _mode
                 k = kb_listener.canonical(key) if kb_listener else key
-                with held_lock:
+                with _mode_lock:
                     held.add(k)
-                    satisfied = _combo_satisfied()
-                if satisfied:
-                    start_recording()
+                    if _mode == "idle":
+                        if _combo_satisfied():
+                            _mode = "chord"
+                            start_recording()
+                        elif one_key is not None and k in one_key.key_family:
+                            _mode = "one_key"
+                            start_recording()
+                    elif _mode == "one_key":
+                        # Neutral: the one-key itself, and any key that is
+                        # part of the configured chord.
+                        if k not in one_key.key_family and not _chord_involved(k):
+                            _mode = "lockout"
+                            _cancel_recording()
 
             def on_release(key: Any) -> None:
+                nonlocal _mode
                 k = kb_listener.canonical(key) if kb_listener else key
-                with held_lock:
+                with _mode_lock:
                     held.discard(k)
-                if _involved(k) and recording.is_set():
-                    stop_recording()
+                    if _mode == "chord" and _chord_involved(k):
+                        _mode = "idle"
+                        stop_recording()
+                    elif _mode == "one_key" and one_key is not None and k in one_key.key_family:
+                        _mode = "idle"
+                        stop_recording()
+                    elif _mode == "lockout" and one_key is not None and k in one_key.key_family:
+                        _mode = "idle"
 
             kb_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
             listeners.append(kb_listener)
+
+        # For mouse-chord users who also want one_key, attach a separate
+        # keyboard listener to handle the one-key state machine.
+        if isinstance(trig, MouseTrigger) and one_key is not None:
+            ok_listener: keyboard.Listener | None = None
+
+            def on_ok_press(key: Any) -> None:
+                nonlocal _mode
+                k = ok_listener.canonical(key) if ok_listener else key
+                with _mode_lock:
+                    if _mode == "idle" and k in one_key.key_family:
+                        _mode = "one_key"
+                        start_recording()
+                    elif _mode == "one_key" and k not in one_key.key_family:
+                        _mode = "lockout"
+                        _cancel_recording()
+
+            def on_ok_release(key: Any) -> None:
+                nonlocal _mode
+                k = ok_listener.canonical(key) if ok_listener else key
+                with _mode_lock:
+                    if _mode == "one_key" and k in one_key.key_family:
+                        _mode = "idle"
+                        stop_recording()
+                    elif _mode == "lockout" and k in one_key.key_family:
+                        _mode = "idle"
+
+            ok_listener = keyboard.Listener(on_press=on_ok_press, on_release=on_ok_release)
+            listeners.append(ok_listener)
 
         for ls in listeners:
             ls.start()

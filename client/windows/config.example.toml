@@ -27,6 +27,18 @@ audio_format = "flac"
 # Examples:  key:ctrl+g   key:ctrl+r   key:f13   key:pause
 trigger = "key:ctrl+g"
 
+# Optional single-key push-to-talk. Coexists with `trigger`:
+#   - Press this key alone -> start recording; release -> send.
+#   - If another key is pressed mid-recording, the take is cancelled
+#     and locked out until this key is released. Keys that are part of
+#     `trigger` (e.g. the main chord key) are treated as neutral and do
+#     not cancel.
+#   - If `trigger` is fully satisfied first (all chord keys held), the
+#     chord path wins; one-key does not fire until the chord releases.
+# Allowed values: key:ctrl, key:alt, key:f1 .. key:f24. Empty = disabled.
+# Letters, digits, and shift are intentionally rejected (would hijack typing).
+one_key_trigger = ""
+
 # Automatically paste the transcript into the focused window via Ctrl+V.
 # The previous clipboard contents are saved and restored afterwards.
 auto_paste = true

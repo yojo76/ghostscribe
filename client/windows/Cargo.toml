@@ -30,6 +30,9 @@ windows = { version = "0.58", features = [
     "Win32_System_Memory",
 ] }
 
+[dev-dependencies]
+mockito = "1"
+
 [profile.release]
 opt-level = "z"
 lto = true
