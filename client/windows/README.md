@@ -82,6 +82,36 @@ Double-click the `.exe`, or from PowerShell:
 .\ghostscribe-client.exe
 ```
 
+### Detached mode (recommended for daily use)
+
+Pass `--detach` to re-spawn the client as a background process with no
+console attachment. The original invocation prints the new PID and exits;
+the child writes all log output to `%APPDATA%\ghostscribe\ghostscribe.log`:
+
+```powershell
+.\ghostscribe-client.exe --detach
+# ghostscribe-client detached (pid 12345)
+# logs: C:\Users\you\AppData\Roaming\ghostscribe\ghostscribe.log
+```
+
+Use `--detach` when:
+
+- Launching from an **IDE-integrated terminal** (Cursor, VS Code, JetBrains)
+  whose own UI is the paste target. A child of the IDE inherits a
+  parent/foreground-window relationship that can cause Chromium-based
+  text inputs (Cursor's agent chat being the canonical case) to silently
+  ignore the synthesised `Ctrl+V`. A detached child sits outside that
+  process tree and pastes reliably.
+- Setting up **autostart-on-login**: create a Windows Startup shortcut
+  pointing at `ghostscribe-client.exe --detach` and you get a
+  console-less, log-to-file daemon that survives shell restarts.
+
+Stop a detached instance with `Stop-Process -Name ghostscribe-client`.
+
+### Foreground mode (for debugging)
+
+Run without `--detach` to keep the console attached and see logs live:
+
 Banner:
 
 ```
@@ -151,7 +181,8 @@ Same UIPI caveat as any Windows input hook:
 
 **Not implemented (deferred; see `README.python.md` for the roadmap):**
 
-- No tray icon, no autostart shortcut, no installer.
+- No tray icon, no installer. Autostart-on-login works today by pointing
+  a Windows Startup shortcut at `ghostscribe-client.exe --detach`.
 - No terminal detection / bracketed-paste fallback.
 - No client-side VAD (server-side VAD handles silence).
 - No streaming / live partial transcripts.
