@@ -8,9 +8,13 @@
 pub mod audio;
 pub mod config;
 pub mod upload;
+pub mod watcher;
 
 #[cfg(target_os = "windows")]
 pub mod hotkey;
 
 #[cfg(target_os = "windows")]
 pub mod paste;
+
+#[cfg(target_os = "windows")]
+pub mod tray;

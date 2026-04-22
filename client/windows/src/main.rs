@@ -2,20 +2,30 @@
 //!
 //! Hold the configured trigger (default Ctrl+G) to record from the microphone.
 //! Release either key to encode WAV, POST to the server, and paste the transcript.
+//!
+//! Two run modes:
+//! * **Headless** (default): blocks on the hotkey channel, logs to stderr.
+//! * **Tray** (`--tray`): shows a system-tray icon, supports in-place config
+//!   editing with validation, runs until the user picks Quit. Implies
+//!   `--detach` unless the env var `GHOSTSCRIBE_DETACHED=1` is set, so that
+//!   double-clicking the exe hides the console window.
 
 use std::fs;
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::channel;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
+use arc_swap::ArcSwap;
 
 use ghostscribe_client::audio::{self, Recorder};
 use ghostscribe_client::config::{self, ClientConfig};
 use ghostscribe_client::hotkey::{parse_one_key_trigger, parse_trigger, run_hook, HotkeyEvent};
+use ghostscribe_client::watcher::{self, WatcherEvent};
 use ghostscribe_client::{paste, upload};
 
 // Win32 process creation flags. Hand-coded to avoid pulling another `windows`
@@ -23,10 +33,14 @@ use ghostscribe_client::{paste, upload};
 const DETACHED_PROCESS: u32 = 0x0000_0008;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-#[derive(Default)]
+/// Env var set on the detached child so we don't double-detach in a loop.
+const ENV_DETACHED: &str = "GHOSTSCRIBE_DETACHED";
+
+#[derive(Default, Clone)]
 struct Args {
     config: Option<PathBuf>,
     detach: bool,
+    tray: bool,
 }
 
 fn parse_args() -> Args {
@@ -39,9 +53,8 @@ fn parse_args() -> Args {
                     out.config = Some(PathBuf::from(p));
                 }
             }
-            "--detach" => {
-                out.detach = true;
-            }
+            "--detach" => out.detach = true,
+            "--tray"   => out.tray = true,
             "-h" | "--help" => {
                 print_help();
                 std::process::exit(0);
@@ -55,10 +68,12 @@ fn parse_args() -> Args {
 fn print_help() {
     println!(
         "GhostScribe Windows client\n\n\
-         Usage: ghostscribe-client.exe [--config PATH] [--detach]\n\n\
+         Usage: ghostscribe-client.exe [--config PATH] [--detach] [--tray]\n\n\
          Hold the configured trigger key to record. Release to transcribe.\n\n\
          Options:\n  \
            --config PATH   Use this TOML config file.\n  \
+           --tray          Run with a system-tray icon and live config editing.\n                          \
+         Implies --detach unless already detached.\n  \
            --detach        Re-spawn as a detached background process with no\n                          \
          console attachment, redirecting all logs to\n                          \
          %APPDATA%\\ghostscribe\\ghostscribe.log. Use this when\n                          \
@@ -83,12 +98,13 @@ fn log_file_path() -> Result<PathBuf> {
 }
 
 /// Re-spawn the current executable as a detached background process whose
-/// stdio is redirected to a log file, then exit. The child has no console
-/// attachment and no parent/foreground-window relationship with whichever
-/// terminal launched us, so synthetic input via `SendInput` reaches all
-/// foreground windows uniformly (including Electron/Chromium chat inputs
-/// that otherwise reject keystrokes from a co-resident process tree).
-fn spawn_detached_and_exit() -> Result<()> {
+/// stdio is redirected to a log file, then exit (the caller does the exit).
+///
+/// `extra_args` are appended after the forwarded args; callers use this to
+/// pass `--tray` when promoting a `--tray`-only invocation into a detached
+/// tray session. `--detach` is always stripped from the forwarded args so
+/// the child does not recurse.
+fn spawn_detached(extra_args: &[&str]) -> Result<u32> {
     let exe = std::env::current_exe().context("current_exe")?;
 
     let log_path = log_file_path()?;
@@ -99,14 +115,17 @@ fn spawn_detached_and_exit() -> Result<()> {
         .with_context(|| format!("opening {}", log_path.display()))?;
     let log_dup = log.try_clone().context("cloning log handle for stderr")?;
 
-    // Forward every flag *except* --detach so the child runs the normal flow.
-    let forwarded: Vec<String> = std::env::args()
+    let mut forwarded: Vec<String> = std::env::args()
         .skip(1)
-        .filter(|a| a != "--detach")
+        .filter(|a| a != "--detach" && a != "--tray")
         .collect();
+    for a in extra_args {
+        forwarded.push((*a).to_string());
+    }
 
     let child = Command::new(&exe)
         .args(&forwarded)
+        .env(ENV_DETACHED, "1")
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_dup))
@@ -116,22 +135,43 @@ fn spawn_detached_and_exit() -> Result<()> {
 
     eprintln!("ghostscribe-client detached (pid {})", child.id());
     eprintln!("logs: {}", log_path.display());
-    Ok(())
+    Ok(child.id())
+}
+
+fn already_detached() -> bool {
+    std::env::var_os(ENV_DETACHED).as_deref() == Some(std::ffi::OsStr::new("1"))
 }
 
 fn main() -> Result<()> {
     let args = parse_args();
 
-    if args.detach {
-        return spawn_detached_and_exit();
+    // Detach / tray-detach promotion. `--tray` implies `--detach` so that
+    // double-clicking the exe doesn't leave a console window around. We only
+    // auto-detach once (ENV_DETACHED on the child breaks the recursion).
+    if args.detach && !already_detached() {
+        spawn_detached(&[])?;
+        return Ok(());
+    }
+    if args.tray && !already_detached() {
+        spawn_detached(&["--tray"])?;
+        return Ok(());
     }
 
     let cfg = config::load(args.config.as_deref())?;
 
-    let trigger = parse_trigger(&cfg.trigger)?;
-    let one_key = parse_one_key_trigger(&cfg.one_key_trigger)?;
+    if args.tray {
+        run_tray(cfg, args)
+    } else {
+        run_headless(cfg)
+    }
+}
 
-    eprintln!("GhostScribe client -> {}", cfg.url());
+// -----------------------------------------------------------------------------
+// Headless mode (original behaviour)
+// -----------------------------------------------------------------------------
+
+fn print_banner(cfg: &ClientConfig, mode: &str) {
+    eprintln!("GhostScribe client ({mode}) -> {}", cfg.url());
     match &cfg.source_path {
         Some(p) => eprintln!("config:   {}", p.display()),
         None => eprintln!("config:   (defaults, no config file found)"),
@@ -143,11 +183,25 @@ fn main() -> Result<()> {
     );
     eprintln!("format:   {}", cfg.audio_format);
     eprintln!("auth:     {}", if cfg.has_auth() { "on" } else { "off" });
-    eprintln!("paste:    {} (delay {} ms)", if cfg.auto_paste { "on" } else { "off" }, cfg.paste_delay_ms);
+    eprintln!(
+        "paste:    {} (delay {} ms)",
+        if cfg.auto_paste { "on" } else { "off" },
+        cfg.paste_delay_ms
+    );
+}
+
+fn run_headless(cfg: ClientConfig) -> Result<()> {
+    let trigger = parse_trigger(&cfg.trigger)?;
+    let one_key = parse_one_key_trigger(&cfg.one_key_trigger)?;
+
+    print_banner(&cfg, "headless");
 
     let recorder = Recorder::start(&cfg.input_device)?;
 
-    eprintln!("Hold {} and speak. Release to transcribe. Ctrl+C to quit.", cfg.trigger);
+    eprintln!(
+        "Hold {} and speak. Release to transcribe. Ctrl+C to quit.",
+        cfg.trigger
+    );
 
     let (tx, rx) = channel::<HotkeyEvent>();
     thread::spawn(move || {
@@ -167,66 +221,422 @@ fn main() -> Result<()> {
                 recorder.cancel();
                 eprintln!("[rec] cancelled");
             }
-            HotkeyEvent::Release => {
-                match recorder.end() {
-                    None => eprintln!("[rec] stopped, no audio captured"),
-                    Some(samples) => {
-                        let raw_kb = samples.len() * 2 / 1024;
-                        eprintln!("[rec] stopped, {raw_kb} kB raw");
-                        handle_upload(&cfg, samples);
-                    }
+            HotkeyEvent::Release => match recorder.end() {
+                None => eprintln!("[rec] stopped, no audio captured"),
+                Some(samples) => {
+                    let raw_kb = samples.len() * 2 / 1024;
+                    eprintln!("[rec] stopped, {raw_kb} kB raw");
+                    spawn_upload_headless(&cfg, samples);
                 }
-            }
+            },
         }
     }
 
     Ok(())
 }
 
-fn handle_upload(cfg: &ClientConfig, samples: Vec<i16>) {
+fn spawn_upload_headless(cfg: &ClientConfig, samples: Vec<i16>) {
     let cfg = cfg.clone();
     thread::spawn(move || {
-        let (encoded, filename, mime) = match audio::encode(&samples, &cfg.audio_format) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("[send] encoding failed: {e}");
-                return;
-            }
-        };
-        eprintln!("[send] {} kB {}", encoded.len() / 1024, cfg.audio_format);
-        match upload::submit(&cfg, &encoded, filename, mime) {
-            Ok(t) => {
-                let kb = t.bytes_sent / 1024;
-                eprintln!(
-                    "[recv] {} kB in {} ms (lang={} p={:.2})",
-                    kb, t.elapsed_ms, t.language, t.language_probability
-                );
-                if t.text.is_empty() {
-                    eprintln!("[recv] empty transcript");
-                    return;
-                }
-                eprintln!("[recv] transcript:");
-                println!("{}", t.text);
-
-                if cfg.auto_paste {
-                    let saved = paste::get_clipboard();
-                    // Trailing space so consecutive takes don't butt up
-                    // against each other in the target field.
-                    let pasted = format!("{} ", t.text);
-                    match paste::set_clipboard(&pasted) {
-                        Err(e) => eprintln!("[paste] clipboard write failed: {e}"),
-                        Ok(()) => {
-                            paste::inject_ctrl_v(cfg.paste_delay_ms);
-                            thread::sleep(Duration::from_millis(cfg.paste_delay_ms as u64));
-                            if let Some(prev) = saved {
-                                let _ = paste::set_clipboard(&prev);
-                            }
-                            eprintln!("[paste] done");
-                        }
-                    }
-                }
-            }
-            Err(e) => eprintln!("[send] {e}"),
+        if let Err(e) = do_upload_and_paste(&cfg, samples) {
+            eprintln!("[send] {e}");
         }
     });
 }
+
+/// Upload + paste pipeline, shared between headless and tray modes. Returns
+/// the transcript text on success so the caller can surface it (headless
+/// prints it to stdout; tray updates the tooltip).
+fn do_upload_and_paste(cfg: &ClientConfig, samples: Vec<i16>) -> Result<String> {
+    let (encoded, filename, mime) = audio::encode(&samples, &cfg.audio_format)
+        .map_err(|e| anyhow!("encoding failed: {e}"))?;
+    eprintln!("[send] {} kB {}", encoded.len() / 1024, cfg.audio_format);
+
+    let t = upload::submit(cfg, &encoded, filename, mime)?;
+    let kb = t.bytes_sent / 1024;
+    eprintln!(
+        "[recv] {} kB in {} ms (lang={} p={:.2})",
+        kb, t.elapsed_ms, t.language, t.language_probability
+    );
+    if t.text.is_empty() {
+        eprintln!("[recv] empty transcript");
+        return Ok(String::new());
+    }
+    eprintln!("[recv] transcript:");
+    println!("{}", t.text);
+
+    if cfg.auto_paste {
+        let saved = paste::get_clipboard();
+        let pasted = format!("{} ", t.text);
+        match paste::set_clipboard(&pasted) {
+            Err(e) => eprintln!("[paste] clipboard write failed: {e}"),
+            Ok(()) => {
+                paste::inject_ctrl_v(cfg.paste_delay_ms);
+                thread::sleep(Duration::from_millis(cfg.paste_delay_ms as u64));
+                if let Some(prev) = saved {
+                    let _ = paste::set_clipboard(&prev);
+                }
+                eprintln!("[paste] done");
+            }
+        }
+    }
+
+    Ok(t.text)
+}
+
+// -----------------------------------------------------------------------------
+// Tray mode
+// -----------------------------------------------------------------------------
+
+use ghostscribe_client::tray::{self, MenuAction, Tray, TrayState};
+use tao::event::Event;
+use tao::event_loop::{ControlFlow, EventLoopBuilder};
+
+#[derive(Debug)]
+enum UserEvent {
+    Hotkey(HotkeyEvent),
+    Menu(MenuAction),
+    Watcher(WatcherEvent),
+    UploadOk(String),
+    UploadErr(String),
+}
+
+fn run_tray(initial: ClientConfig, args: Args) -> Result<()> {
+    print_banner(&initial, "tray");
+
+    let trigger = parse_trigger(&initial.trigger)?;
+    let one_key = parse_one_key_trigger(&initial.one_key_trigger)?;
+
+    let cfg_store = Arc::new(ArcSwap::from_pointee(initial.clone()));
+
+    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    let proxy = event_loop.create_proxy();
+
+    // Hotkey hook → adapter thread → proxy.
+    {
+        let (hk_tx, hk_rx) = channel::<HotkeyEvent>();
+        thread::spawn(move || {
+            if let Err(e) = run_hook(hk_tx, trigger, one_key) {
+                eprintln!("[fatal] keyboard hook failed: {e}");
+            }
+        });
+        let proxy = proxy.clone();
+        thread::spawn(move || {
+            while let Ok(ev) = hk_rx.recv() {
+                if proxy.send_event(UserEvent::Hotkey(ev)).is_err() {
+                    return;
+                }
+            }
+        });
+    }
+
+    // Menu events → proxy.
+    {
+        let proxy = proxy.clone();
+        thread::spawn(move || {
+            let rx = tray_icon::menu::MenuEvent::receiver();
+            while let Ok(ev) = rx.recv() {
+                if let Some(a) = MenuAction::from_id(ev.id.as_ref()) {
+                    if proxy.send_event(UserEvent::Menu(a)).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+    }
+
+    // Config watcher → proxy. Only meaningful if the user has a file on
+    // disk; pure-default sessions have nothing to watch.
+    if let Some(path) = initial.source_path.clone() {
+        let store = cfg_store.clone();
+        let proxy = proxy.clone();
+        watcher::spawn(
+            path,
+            move || (**store.load()).clone(),
+            move |ev: WatcherEvent| proxy.send_event(UserEvent::Watcher(ev)).map_err(|_| ()),
+        );
+    }
+
+    let recorder = Recorder::start(&initial.input_device)?;
+    let mut tray = Tray::new(initial.source_path.clone())?;
+    // Track pending cold-key changes so "Restart" can surface them.
+    let mut pending_restart: Vec<&'static str> = Vec::new();
+    let recorder_opt = Some(recorder);
+    let cfg_path_for_menu = initial.source_path.clone();
+    let args_for_restart = args.clone();
+
+    event_loop.run(move |event, _target, control_flow| {
+        *control_flow = ControlFlow::Wait;
+
+        match event {
+            Event::UserEvent(UserEvent::Hotkey(HotkeyEvent::Press)) => {
+                if let Some(r) = recorder_opt.as_ref() {
+                    r.begin();
+                    let _ = tray.set_state(TrayState::Recording);
+                }
+            }
+            Event::UserEvent(UserEvent::Hotkey(HotkeyEvent::Cancel)) => {
+                if let Some(r) = recorder_opt.as_ref() {
+                    r.cancel();
+                }
+                let _ = tray.set_state(TrayState::Idle);
+            }
+            Event::UserEvent(UserEvent::Hotkey(HotkeyEvent::Release)) => {
+                let samples = recorder_opt.as_ref().and_then(|r| r.end());
+                match samples {
+                    None => {
+                        let _ = tray.set_state(TrayState::Idle);
+                    }
+                    Some(samples) => {
+                        let _ = tray.set_state(TrayState::Uploading);
+                        let cfg_snap = cfg_store.load_full();
+                        let proxy = proxy.clone();
+                        thread::spawn(move || {
+                            match do_upload_and_paste(&cfg_snap, samples) {
+                                Ok(text)  => { let _ = proxy.send_event(UserEvent::UploadOk(text)); }
+                                Err(e)    => { let _ = proxy.send_event(UserEvent::UploadErr(format!("{e:#}"))); }
+                            }
+                        });
+                    }
+                }
+            }
+            Event::UserEvent(UserEvent::UploadOk(text)) => {
+                let _ = tray.set_state(TrayState::Idle);
+                if !text.is_empty() {
+                    tray.set_tooltip_suffix(&format!("last: {} chars", text.chars().count()));
+                }
+            }
+            Event::UserEvent(UserEvent::UploadErr(msg)) => {
+                eprintln!("[send] {msg}");
+                let _ = tray.set_state(TrayState::Error);
+                tray.set_tooltip_suffix(&truncate(&msg, 80));
+            }
+            Event::UserEvent(UserEvent::Watcher(w)) => {
+                handle_watcher_event(w, &cfg_store, &mut tray, &mut pending_restart);
+            }
+            Event::UserEvent(UserEvent::Menu(a)) => {
+                if handle_menu_action(
+                    a,
+                    &cfg_path_for_menu,
+                    &cfg_store,
+                    &mut tray,
+                    &mut pending_restart,
+                    &args_for_restart,
+                ) {
+                    *control_flow = ControlFlow::Exit;
+                }
+            }
+            _ => {}
+        }
+    });
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let head: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{head}…")
+    }
+}
+
+fn handle_watcher_event(
+    ev: WatcherEvent,
+    cfg_store: &Arc<ArcSwap<ClientConfig>>,
+    tray: &mut Tray,
+    pending_restart: &mut Vec<&'static str>,
+) {
+    match ev {
+        WatcherEvent::Reloaded { new_config, diff } => {
+            // Apply hot swap so future uploads see the new values.
+            cfg_store.store(Arc::new(*new_config));
+            if !diff.hot_changed.is_empty() {
+                let msg = format!("reloaded: {}", diff.hot_changed.join(", "));
+                eprintln!("[config] {msg}");
+                tray.set_tooltip_suffix(&msg);
+            }
+            if !diff.cold_changed.is_empty() {
+                // Record the cold-key drift so "Restart" knows there is
+                // work to do, and surface a non-blocking hint in the icon.
+                for k in &diff.cold_changed {
+                    if !pending_restart.contains(k) {
+                        pending_restart.push(*k);
+                    }
+                }
+                eprintln!("[config] restart required: {}", pending_restart.join(", "));
+                let _ = tray.set_state(TrayState::Error);
+                tray.set_tooltip_suffix(&format!(
+                    "restart required: {}",
+                    pending_restart.join(", ")
+                ));
+            }
+        }
+        WatcherEvent::ParseError { message } => {
+            eprintln!("[config] parse error: {message}");
+            let _ = tray.set_state(TrayState::Error);
+            tray.set_tooltip_suffix("config parse error — see dialog");
+            tray::show_error_box("GhostScribe — config parse error", &message);
+        }
+        WatcherEvent::Missing => {
+            eprintln!("[config] source file disappeared");
+            tray.set_tooltip_suffix("config file missing");
+        }
+    }
+}
+
+/// Returns `true` to request event-loop exit (i.e. Quit).
+fn handle_menu_action(
+    action: MenuAction,
+    cfg_path: &Option<PathBuf>,
+    cfg_store: &Arc<ArcSwap<ClientConfig>>,
+    tray: &mut Tray,
+    pending_restart: &mut Vec<&'static str>,
+    args: &Args,
+) -> bool {
+    match action {
+        MenuAction::EditConfig => {
+            match ensure_config_file(cfg_path) {
+                Ok(p)  => shell_open(&p),
+                Err(e) => tray::show_error_box("GhostScribe", &format!("Cannot open config: {e:#}")),
+            }
+            false
+        }
+        MenuAction::RevealConfig => {
+            if let Some(p) = cfg_path {
+                shell_reveal(p);
+            }
+            false
+        }
+        MenuAction::ReloadConfig => {
+            if let Some(p) = cfg_path {
+                match config::load_from(p) {
+                    Ok(new_cfg) => {
+                        let live = cfg_store.load_full();
+                        let d = config::diff(&live, &new_cfg);
+                        cfg_store.store(Arc::new(new_cfg));
+                        if d.is_empty() {
+                            tray.set_tooltip_suffix("reload: no changes");
+                        } else if d.cold_changed.is_empty() {
+                            tray.set_tooltip_suffix(&format!(
+                                "reloaded: {}",
+                                d.hot_changed.join(", ")
+                            ));
+                        } else {
+                            for k in &d.cold_changed {
+                                if !pending_restart.contains(k) {
+                                    pending_restart.push(*k);
+                                }
+                            }
+                            let _ = tray.set_state(TrayState::Error);
+                            tray.set_tooltip_suffix(&format!(
+                                "restart required: {}",
+                                pending_restart.join(", ")
+                            ));
+                        }
+                    }
+                    Err(e) => tray::show_error_box(
+                        "GhostScribe — config parse error",
+                        &format!("{e:#}"),
+                    ),
+                }
+            }
+            false
+        }
+        MenuAction::ShowLog => {
+            if let Ok(p) = log_file_path() {
+                shell_open(&p);
+            }
+            false
+        }
+        MenuAction::Restart => {
+            let extra: Vec<&str> = if args.tray { vec!["--tray"] } else { vec![] };
+            if let Err(e) = spawn_detached(&extra) {
+                tray::show_error_box("GhostScribe", &format!("Restart failed: {e:#}"));
+                return false;
+            }
+            true
+        }
+        MenuAction::About => {
+            let cfg_line = cfg_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "(defaults, no file)".to_string());
+            let body = format!(
+                "GhostScribe Windows client v{}\n\n\
+                 config: {}\n\
+                 server: {}\n",
+                env!("CARGO_PKG_VERSION"),
+                cfg_line,
+                cfg_store.load().url(),
+            );
+            show_info_box("About GhostScribe", &body);
+            false
+        }
+        MenuAction::Quit => true,
+    }
+}
+
+/// Ensure the config file exists at the active path. If the user picked a
+/// file but it doesn't exist yet, seed it with [`config::DEFAULT_CONFIG_TOML`]
+/// so their editor opens to something useful instead of an empty scratchpad.
+fn ensure_config_file(cfg_path: &Option<PathBuf>) -> Result<PathBuf> {
+    let path = cfg_path
+        .clone()
+        .or_else(|| {
+            std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("ghostscribe").join("config.toml"))
+        })
+        .ok_or_else(|| anyhow!("no config path known and %APPDATA% is not set"))?;
+    if !path.exists() {
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir).with_context(|| format!("mkdir {}", dir.display()))?;
+        }
+        fs::write(&path, config::DEFAULT_CONFIG_TOML)
+            .with_context(|| format!("seeding {}", path.display()))?;
+    }
+    Ok(path)
+}
+
+fn shell_open(path: &Path) {
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let path_w: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    unsafe {
+        ShellExecuteW(
+            HWND::default(),
+            w!("open"),
+            PCWSTR(path_w.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+fn shell_reveal(path: &Path) {
+    // `explorer.exe /select,"path"` opens the parent folder with the file
+    // highlighted. We route through CreateProcess so the command line can
+    // contain spaces without quoting ceremony.
+    let arg = format!("/select,{}", path.display());
+    let _ = Command::new("explorer.exe").arg(arg).spawn();
+}
+
+fn show_info_box(title: &str, body: &str) {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_OK};
+    let title_w: Vec<u16> = title.encode_utf16().chain([0]).collect();
+    let body_w: Vec<u16> = body.encode_utf16().chain([0]).collect();
+    unsafe {
+        MessageBoxW(
+            HWND::default(),
+            PCWSTR(body_w.as_ptr()),
+            PCWSTR(title_w.as_ptr()),
+            MB_OK | MB_ICONINFORMATION,
+        );
+    }
+}
+
+use std::os::windows::ffi::OsStrExt;

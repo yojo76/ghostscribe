@@ -57,9 +57,14 @@ pub fn parse_one_key_trigger(s: &str) -> Result<Option<OneKeyTrigger>> {
     if s.is_empty() {
         return Ok(None);
     }
-    let rest = s
-        .strip_prefix("key:")
-        .ok_or_else(|| anyhow!("one_key_trigger must start with 'key:' (got {s:?})"))?;
+    // Prefix match is case-insensitive to mirror the main `parse_trigger`
+    // behaviour; the error keeps the original input so the user sees what
+    // they typed.
+    let rest = if s.len() >= 4 && s[..4].eq_ignore_ascii_case("key:") {
+        &s[4..]
+    } else {
+        return Err(anyhow!("one_key_trigger must start with 'key:' (got {s:?})"));
+    };
     if rest.contains('+') {
         return Err(anyhow!(
             "one_key_trigger cannot be a chord (got {s:?}); use trigger= for chords"

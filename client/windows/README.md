@@ -118,6 +118,63 @@ Use `--detach` when:
 
 Stop a detached instance with `Stop-Process -Name ghostscribe-client`.
 
+### Tray mode (recommended for interactive editing)
+
+Pass `--tray` to run with a system-tray icon and live config editing:
+
+```powershell
+.\ghostscribe-client.exe --tray
+# ghostscribe-client detached (pid 12345)
+# logs: C:\Users\you\AppData\Roaming\ghostscribe\ghostscribe.log
+```
+
+`--tray` implies `--detach`: the parent exits and the tray becomes the
+only UI surface (no console window to manage). Left-click the icon to
+open the context menu:
+
+- **Edit config…** – opens the active `config.toml` in your default
+  editor via `ShellExecuteW`. If no file exists yet, the client seeds
+  `%APPDATA%\ghostscribe\config.toml` with a commented template first.
+- **Reveal config in Explorer** – opens the parent folder with the file
+  selected (`explorer.exe /select,…`).
+- **Reload now** – force-revalidates the config file on demand, without
+  waiting for the 1 s mtime poll.
+- **Show log** – opens `%APPDATA%\ghostscribe\ghostscribe.log`.
+- **Restart client** – respawns a fresh detached tray child and exits
+  the current one. Use after changing a cold key (see below).
+- **About GhostScribe** – version, config path, server URL.
+- **Quit** – exit the tray session.
+
+**Icon colour reflects state.** A single 32×32 filled-circle glyph,
+tinted per state: idle (neutral grey), recording (red), uploading
+(blue), error (amber). Hover the icon to see the full tooltip, e.g.
+`GhostScribe — uploading… — last: 47 chars`.
+
+**Live config reload.** A watcher thread stats the config file once per
+second. When the file's `mtime` advances, the new contents are parsed
+and diffed against the running config:
+
+- **Hot keys** (`server_url`, `endpoint`, `auth_token`, `auto_paste`,
+  `paste_delay_ms`) are swapped in atomically under an `ArcSwap`. The
+  next upload/paste sees the new value. Tooltip updates to `reloaded:
+  server_url, auto_paste`.
+- **Cold keys** (`trigger`, `one_key_trigger`, `input_device`,
+  `audio_format`) cannot be changed mid-session because the audio stream
+  and the low-level keyboard hook capture them at startup. The icon
+  turns amber and the tooltip shows `restart required: trigger,
+  audio_format`. Pick **Restart client** to apply them.
+- **Parse errors** (malformed TOML, invalid keys, etc.) pop a modal
+  message box with the diagnostic. The running config is untouched,
+  so the client keeps working with the previous values.
+
+**What `--tray` does not do:**
+
+- No balloon toasts (`Shell_NotifyIconW NIF_INFO`). Tooltips and the
+  error dialog carry the same information.
+- No taskbar icon; tray-only by design.
+- No global hotkey to toggle the tray — right-click the icon and pick
+  Quit to exit.
+
 ### Foreground mode (for debugging)
 
 Run without `--detach` to keep the console attached and see logs live:
@@ -193,11 +250,14 @@ Same UIPI caveat as any Windows input hook:
   `Ctrl+V` via `SendInput` -> wait `paste_delay_ms` -> restore.
 - `--detach` mode: re-spawns as a background process with stdio
   redirected to `%APPDATA%\ghostscribe\ghostscribe.log`.
+- `--tray` mode: system-tray icon with state-aware colours, live config
+  reload (hot keys applied atomically; cold keys surface a
+  restart-required state), and an editor-launching menu.
 
 **Not implemented (deferred; see `README.python.md` for the roadmap):**
 
-- No tray icon, no installer. Autostart-on-login works today by pointing
-  a Windows Startup shortcut at `ghostscribe-client.exe --detach`.
+- No installer. Autostart-on-login works today by pointing a Windows
+  Startup shortcut at `ghostscribe-client.exe --tray`.
 - No terminal detection / bracketed-paste fallback.
 - No client-side VAD (server-side VAD handles silence).
 - No streaming / live partial transcripts.
@@ -222,7 +282,10 @@ can pipe them wherever you like even when the paste is on.
 | `src/hotkey.rs`        | `WH_KEYBOARD_LL` hook; chord + one-key state machine. |
 | `src/upload.rs`        | Multipart `ureq` POST with `X-Auth-Token`.       |
 | `src/paste.rs`         | Save-Paste-Restore via Win32 clipboard + `SendInput`. |
+| `src/tray.rs`          | `--tray` icon, procedural state-tinted glyphs, menu wiring. |
+| `src/watcher.rs`       | 1 s mtime poll of the active `config.toml`; diffs against live config. |
 | `tests/upload.rs`      | Integration tests against a mock HTTP server.    |
+| `tests/config_diff.rs` | Integration tests for hot/cold `config::diff` classification. |
 | `config.example.toml`  | Template config (safe to commit).                |
 | `dist/ghostscribe-client.exe` | Prebuilt release binary.                   |
 | `dist/config.toml`     | **Gitignored.** Your local config with a real `auth_token`. |

@@ -46,6 +46,23 @@ impl ClientConfig {
     }
 }
 
+/// Text seeded into a freshly-created `config.toml` when the user clicks
+/// "Edit config…" and no file exists yet. Kept in lock-step with the real
+/// defaults in `defaults()` below; the commented defaults double as docs.
+pub const DEFAULT_CONFIG_TOML: &str = r#"# GhostScribe Windows client config
+# All keys are optional; commented lines show the built-in defaults.
+
+# server_url     = "http://localhost:5005"
+# endpoint       = "/v1/auto"
+# auth_token     = ""
+# input_device   = ""                 # substring match against device name
+# trigger        = "key:ctrl+g"       # push-to-talk chord
+# one_key_trigger = ""                 # optional single-key PTT, e.g. key:f11
+# audio_format   = "flac"             # "flac" or "wav"
+# auto_paste     = true
+# paste_delay_ms = 50
+"#;
+
 fn defaults() -> ClientConfig {
     ClientConfig {
         server_url: "http://localhost:5005".to_string(),
@@ -85,19 +102,26 @@ fn candidate_paths(explicit: Option<&Path>) -> Vec<PathBuf> {
 }
 
 pub fn load(explicit: Option<&Path>) -> Result<ClientConfig> {
-    let mut cfg = defaults();
-
     for path in candidate_paths(explicit) {
         if path.is_file() {
-            let text = fs::read_to_string(&path)
-                .with_context(|| format!("reading {}", path.display()))?;
-            apply_raw(&mut cfg, toml::from_str(&text)
-                .with_context(|| format!("parsing {}", path.display()))?);
-            cfg.source_path = Some(path);
-            break;
+            return load_from(&path);
         }
     }
+    Ok(defaults())
+}
 
+/// Parse a specific file on disk into a fresh `ClientConfig`. Used by the
+/// watcher to re-validate a config after the user saves without re-running
+/// the candidate-path search (which could pick a different file if the
+/// user deletes the active one).
+pub fn load_from(path: &Path) -> Result<ClientConfig> {
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    let raw: RawConfig = toml::from_str(&text)
+        .with_context(|| format!("parsing {}", path.display()))?;
+    let mut cfg = defaults();
+    apply_raw(&mut cfg, raw);
+    cfg.source_path = Some(path.to_path_buf());
     Ok(cfg)
 }
 
@@ -111,6 +135,64 @@ fn apply_raw(cfg: &mut ClientConfig, raw: RawConfig) {
     if let Some(v) = raw.audio_format    { cfg.audio_format = v; }
     if let Some(v) = raw.auto_paste      { cfg.auto_paste = v; }
     if let Some(v) = raw.paste_delay_ms  { cfg.paste_delay_ms = v; }
+}
+
+/// Keys that can be swapped into a running client without a restart.
+/// Readers re-snapshot the config on every upload/paste, so atomic
+/// replacement is enough.
+pub const HOT_KEYS: &[&str] = &[
+    "server_url",
+    "endpoint",
+    "auth_token",
+    "auto_paste",
+    "paste_delay_ms",
+];
+
+/// Keys whose change requires re-registering the keyboard hook, rebuilding
+/// the audio stream, or otherwise reinitialising long-lived resources that
+/// were captured at startup. The tray shows a "Restart required" balloon
+/// when any of these diverge and enables the "Restart client" menu item.
+pub const COLD_KEYS: &[&str] = &[
+    "trigger",
+    "one_key_trigger",
+    "input_device",
+    "audio_format",
+];
+
+/// Outcome of comparing a freshly-loaded config against the live one.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ConfigDiff {
+    pub hot_changed: Vec<&'static str>,
+    pub cold_changed: Vec<&'static str>,
+}
+
+impl ConfigDiff {
+    pub fn is_empty(&self) -> bool {
+        self.hot_changed.is_empty() && self.cold_changed.is_empty()
+    }
+
+    pub fn requires_restart(&self) -> bool {
+        !self.cold_changed.is_empty()
+    }
+}
+
+/// Classify which keys changed between the live config and a newly-parsed one.
+/// `source_path` is intentionally ignored: rewriting the same file doesn't
+/// count as a "config change" for reload purposes.
+pub fn diff(old: &ClientConfig, new: &ClientConfig) -> ConfigDiff {
+    let mut d = ConfigDiff::default();
+    if old.server_url     != new.server_url     { d.hot_changed.push("server_url"); }
+    if old.endpoint       != new.endpoint       { d.hot_changed.push("endpoint"); }
+    if old.auth_token     != new.auth_token     { d.hot_changed.push("auth_token"); }
+    if old.auto_paste     != new.auto_paste     { d.hot_changed.push("auto_paste"); }
+    if old.paste_delay_ms != new.paste_delay_ms { d.hot_changed.push("paste_delay_ms"); }
+
+    if old.trigger         != new.trigger         { d.cold_changed.push("trigger"); }
+    if old.one_key_trigger != new.one_key_trigger { d.cold_changed.push("one_key_trigger"); }
+    if old.input_device    != new.input_device    { d.cold_changed.push("input_device"); }
+    if old.audio_format    != new.audio_format    { d.cold_changed.push("audio_format"); }
+
+    d
 }
 
 #[cfg(test)]
