@@ -23,6 +23,7 @@ import argparse
 import io
 import os
 import queue
+import re
 import shutil
 import signal
 import subprocess
@@ -489,6 +490,22 @@ def detect_terminal_focus() -> tuple[bool, str]:
     return any(n.lower() in _TERMINAL_CLASSES for n in names), cls
 
 
+def inject_enter() -> None:
+    """Simulate a single Enter key press in the currently focused window."""
+    global _paste_kb
+    if _paste_kb is None:
+        _paste_kb = keyboard.Controller()
+    _paste_kb.press(keyboard.Key.enter)
+    _paste_kb.release(keyboard.Key.enter)
+
+
+_DO_IT_NOW_RE = re.compile(r"^do\s+it\s+now\W*$", re.IGNORECASE)
+
+
+def _is_do_it_now(text: str) -> bool:
+    return bool(_DO_IT_NOW_RE.match(text.strip()))
+
+
 def inject_paste(delay_ms: int, use_shift: bool = False) -> None:
     """Simulate Ctrl+V (or Ctrl+Shift+V) in the currently focused window.
 
@@ -565,6 +582,11 @@ def submit(
     if not text:
         _eprint("[recv] empty transcript")
         return ""
+
+    if cfg.auto_paste and _is_do_it_now(text):
+        _eprint("[do-it-now] Enter")
+        inject_enter()
+        return text
 
     pasted = False
     combo_used = "ctrl+v"

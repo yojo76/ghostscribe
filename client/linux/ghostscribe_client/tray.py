@@ -50,7 +50,7 @@ class TrayState(enum.Enum):
     def tint(self) -> tuple[int, int, int]:
         # Saturated enough to survive both dark and light panel themes.
         return {
-            TrayState.IDLE:      (180, 180, 180),
+            TrayState.IDLE:      ( 40, 180,  40),
             TrayState.RECORDING: (220,  40,  40),
             TrayState.UPLOADING: ( 40, 100, 220),
             TrayState.ERROR:     (240, 180,  40),
