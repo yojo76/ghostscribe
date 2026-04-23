@@ -27,15 +27,19 @@ DEFAULT_CONFIG_TOML: str = """\
 # GhostScribe Linux client config
 # All keys are optional; commented lines show the built-in defaults.
 
-# server_url      = "http://localhost:5005"
-# endpoint        = "/v1/auto"
-# auth_token      = ""
-# input_device    = ""               # substring match; empty = system default
-# trigger         = "mouse:x2"       # push-to-talk chord or mouse button
-# one_key_trigger = ""               # optional single-key PTT, e.g. key:ctrl
-# audio_format    = "flac"           # "flac" or "wav"
-# auto_paste      = true
-# paste_delay_ms  = 50
+# server_url           = "http://localhost:5005"
+# endpoint             = "/v1/auto"
+# auth_token           = ""
+# input_device         = ""               # substring match; empty = system default
+# trigger              = "mouse:x2"       # push-to-talk chord or mouse button
+# one_key_trigger      = ""               # optional single-key PTT, e.g. key:ctrl
+# audio_format         = "flac"           # "flac" or "wav"
+# auto_paste           = true
+# paste_delay_ms       = 50
+# request_timeout_s    = 30              # HTTP POST timeout in seconds
+# max_record_s         = 300             # hard cap on recording length (seconds)
+# smart_space          = true            # prepend space when continuing dictation
+# continuation_window_s = 30             # seconds after last paste that counts as continuation
 """
 
 
@@ -49,6 +53,10 @@ DEFAULTS: dict[str, object] = {
     "audio_format": "flac",
     "auto_paste": True,
     "paste_delay_ms": 50,
+    "request_timeout_s": 30,
+    "max_record_s": 300,
+    "smart_space": True,
+    "continuation_window_s": 30,
 }
 
 
@@ -63,6 +71,10 @@ class ClientConfig:
     audio_format: str = "flac"
     auto_paste: bool = True
     paste_delay_ms: int = 50
+    request_timeout_s: int = 30
+    max_record_s: int = 300
+    smart_space: bool = True
+    continuation_window_s: int = 30
     source_path: Path | None = field(default=None, compare=False)
 
     @property
@@ -109,6 +121,10 @@ def _build(merged: dict[str, object], source: Path | None) -> ClientConfig:
         audio_format=str(merged["audio_format"]).lower(),
         auto_paste=_coerce_bool(merged["auto_paste"], field_name="auto_paste"),
         paste_delay_ms=int(merged["paste_delay_ms"]),
+        request_timeout_s=int(merged["request_timeout_s"]),
+        max_record_s=int(merged["max_record_s"]),
+        smart_space=_coerce_bool(merged["smart_space"], field_name="smart_space"),
+        continuation_window_s=int(merged["continuation_window_s"]),
         source_path=source,
     )
 
@@ -157,6 +173,10 @@ HOT_KEYS: tuple[str, ...] = (
     "auth_token",
     "auto_paste",
     "paste_delay_ms",
+    "request_timeout_s",
+    "max_record_s",
+    "smart_space",
+    "continuation_window_s",
 )
 
 # Keys whose change requires rebuilding the pynput listener(s) or the

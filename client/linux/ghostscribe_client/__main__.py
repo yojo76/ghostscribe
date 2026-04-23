@@ -446,6 +446,7 @@ def copy_to_clipboard(text: str) -> bool:
 
 
 _paste_kb: keyboard.Controller | None = None
+_last_paste_time: float = 0.0
 
 
 # Class names returned by ``xdotool getactivewindow getwindowclassname`` for
@@ -604,7 +605,7 @@ def submit(
     size_kb = len(payload) / 1024
     t0 = time.perf_counter()
     try:
-        resp = client.post(cfg.url, files=files, headers=headers, timeout=30.0)
+        resp = client.post(cfg.url, files=files, headers=headers, timeout=cfg.request_timeout_s)
     except httpx.HTTPError as exc:
         _eprint(f"[send] failed: {exc}")
         return None
@@ -635,16 +636,27 @@ def submit(
     pasted = False
     combo_used = "ctrl+v"
     if cfg.auto_paste:
+        global _last_paste_time
+        now = time.monotonic()
+        paste_text = text
+        if (
+            cfg.smart_space
+            and _last_paste_time > 0
+            and now - _last_paste_time < cfg.continuation_window_s
+            and paste_text and not paste_text[0].isspace()
+        ):
+            paste_text = " " + paste_text
         saved = read_clipboard()
         # Trailing space so back-to-back takes don't concatenate in the
         # target field. Only applied to the pasted copy — not to _eprint().
-        if copy_to_clipboard(text + " "):
+        if copy_to_clipboard(paste_text + " "):
             use_shift, win_cls = detect_terminal_focus()
             combo_used = "ctrl+shift+v" if use_shift else "ctrl+v"
             _eprint(f"[paste] window={win_cls!r} -> {combo_used}")
             try:
                 inject_paste(cfg.paste_delay_ms, use_shift=use_shift)
                 pasted = True
+                _last_paste_time = time.monotonic()
                 time.sleep(cfg.paste_delay_ms / 1000.0)
                 if saved is not None:
                     copy_to_clipboard(saved)
@@ -736,6 +748,25 @@ def run(cfg: ClientConfig) -> int:
                 jobs.put(audio)
 
         _chunk_timer = _ChunkTimer(_on_auto_chunk)
+        _max_rec: list[threading.Timer | None] = [None]
+
+        def _start_max_timer() -> None:
+            s = cfg.max_record_s
+            if s <= 0:
+                return
+            def _fire() -> None:
+                _eprint(f"[rec] max duration ({s}s) reached, submitting")
+                stop_recording()
+            t = threading.Timer(s, _fire)
+            t.daemon = True
+            t.start()
+            _max_rec[0] = t
+
+        def _stop_max_timer() -> None:
+            t = _max_rec[0]
+            if t is not None:
+                t.cancel()
+                _max_rec[0] = None
 
         def start_recording() -> None:
             if recording.is_set():
@@ -744,9 +775,11 @@ def run(cfg: ClientConfig) -> int:
             recorder.begin()
             _eprint("[rec] ...")
             _chunk_timer.start()
+            _start_max_timer()
 
         def stop_recording() -> None:
             _chunk_timer.stop()
+            _stop_max_timer()
             if not recording.is_set():
                 return
             recording.clear()
@@ -757,6 +790,7 @@ def run(cfg: ClientConfig) -> int:
 
         def _cancel_recording() -> None:
             _chunk_timer.stop()
+            _stop_max_timer()
             if not recording.is_set():
                 return
             recording.clear()
@@ -1224,6 +1258,25 @@ def run_tray(initial: ClientConfig) -> int:
             jobs.put(audio)
 
     _chunk_timer = _ChunkTimer(_on_auto_chunk)
+    _max_rec: list[threading.Timer | None] = [None]
+
+    def _start_max_timer() -> None:
+        s = get_cfg().max_record_s
+        if s <= 0:
+            return
+        def _fire() -> None:
+            _eprint(f"[rec] max duration ({s}s) reached, submitting")
+            stop_recording()
+        t = threading.Timer(s, _fire)
+        t.daemon = True
+        t.start()
+        _max_rec[0] = t
+
+    def _stop_max_timer() -> None:
+        t = _max_rec[0]
+        if t is not None:
+            t.cancel()
+            _max_rec[0] = None
 
     def start_recording() -> None:
         if recording.is_set():
@@ -1233,9 +1286,11 @@ def run_tray(initial: ClientConfig) -> int:
         on_state(TrayState.RECORDING)
         _eprint("[rec] ...")
         _chunk_timer.start()
+        _start_max_timer()
 
     def stop_recording() -> None:
         _chunk_timer.stop()
+        _stop_max_timer()
         if not recording.is_set():
             return
         recording.clear()
@@ -1247,6 +1302,7 @@ def run_tray(initial: ClientConfig) -> int:
 
     def cancel_recording() -> None:
         _chunk_timer.stop()
+        _stop_max_timer()
         if not recording.is_set():
             return
         recording.clear()

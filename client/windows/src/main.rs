@@ -197,6 +197,8 @@ fn run_headless(cfg: ClientConfig) -> Result<()> {
     print_banner(&cfg, "headless");
 
     let recorder = Recorder::start(&cfg.input_device)?;
+    let last_paste: Arc<std::sync::Mutex<Option<std::time::Instant>>> =
+        Arc::new(std::sync::Mutex::new(None));
 
     eprintln!(
         "Hold {} and speak. Release to transcribe. Ctrl+C to quit.",
@@ -226,7 +228,7 @@ fn run_headless(cfg: ClientConfig) -> Result<()> {
                 Some(samples) => {
                     let raw_kb = samples.len() * 2 / 1024;
                     eprintln!("[rec] stopped, {raw_kb} kB raw");
-                    spawn_upload_headless(&cfg, samples);
+                    spawn_upload_headless(&cfg, samples, last_paste.clone());
                 }
             },
         }
@@ -235,10 +237,14 @@ fn run_headless(cfg: ClientConfig) -> Result<()> {
     Ok(())
 }
 
-fn spawn_upload_headless(cfg: &ClientConfig, samples: Vec<i16>) {
+fn spawn_upload_headless(
+    cfg: &ClientConfig,
+    samples: Vec<i16>,
+    last_paste: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+) {
     let cfg = cfg.clone();
     thread::spawn(move || {
-        if let Err(e) = do_upload_and_paste(&cfg, samples) {
+        if let Err(e) = do_upload_and_paste(&cfg, samples, &last_paste) {
             eprintln!("[send] {e}");
         }
     });
@@ -247,7 +253,13 @@ fn spawn_upload_headless(cfg: &ClientConfig, samples: Vec<i16>) {
 /// Upload + paste pipeline, shared between headless and tray modes. Returns
 /// the transcript text on success so the caller can surface it (headless
 /// prints it to stdout; tray updates the tooltip).
-fn do_upload_and_paste(cfg: &ClientConfig, samples: Vec<i16>) -> Result<String> {
+///
+/// `last_paste` tracks when the previous paste occurred for smart-space continuation.
+fn do_upload_and_paste(
+    cfg: &ClientConfig,
+    samples: Vec<i16>,
+    last_paste: &std::sync::Mutex<Option<std::time::Instant>>,
+) -> Result<String> {
     let (encoded, filename, mime) = audio::encode(&samples, &cfg.audio_format)
         .map_err(|e| anyhow!("encoding failed: {e}"))?;
     eprintln!("[send] {} kB {}", encoded.len() / 1024, cfg.audio_format);
@@ -266,12 +278,23 @@ fn do_upload_and_paste(cfg: &ClientConfig, samples: Vec<i16>) -> Result<String> 
     println!("{}", t.text);
 
     if cfg.auto_paste {
+        let mut lp = last_paste.lock().unwrap();
+        let needs_space = cfg.smart_space
+            && lp.map_or(false, |t| {
+                t.elapsed().as_secs_f32() < cfg.continuation_window_s as f32
+            })
+            && t.text.chars().next().map_or(false, |c| !c.is_whitespace());
+        let paste_text = if needs_space {
+            format!(" {} ", t.text)
+        } else {
+            format!("{} ", t.text)
+        };
         let saved = paste::get_clipboard();
-        let pasted = format!("{} ", t.text);
-        match paste::set_clipboard(&pasted) {
+        match paste::set_clipboard(&paste_text) {
             Err(e) => eprintln!("[paste] clipboard write failed: {e}"),
             Ok(()) => {
                 paste::inject_ctrl_v(cfg.paste_delay_ms);
+                *lp = Some(std::time::Instant::now());
                 thread::sleep(Duration::from_millis(cfg.paste_delay_ms as u64));
                 if let Some(prev) = saved {
                     let _ = paste::set_clipboard(&prev);
@@ -364,6 +387,8 @@ fn run_tray(initial: ClientConfig, args: Args) -> Result<()> {
     let recorder_opt = Some(recorder);
     let cfg_path_for_menu = initial.source_path.clone();
     let args_for_restart = args.clone();
+    let last_paste: Arc<std::sync::Mutex<Option<std::time::Instant>>> =
+        Arc::new(std::sync::Mutex::new(None));
 
     event_loop.run(move |event, _target, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -391,8 +416,9 @@ fn run_tray(initial: ClientConfig, args: Args) -> Result<()> {
                         let _ = tray.set_state(TrayState::Uploading);
                         let cfg_snap = cfg_store.load_full();
                         let proxy = proxy.clone();
+                        let lp = last_paste.clone();
                         thread::spawn(move || {
-                            match do_upload_and_paste(&cfg_snap, samples) {
+                            match do_upload_and_paste(&cfg_snap, samples, &lp) {
                                 Ok(text)  => { let _ = proxy.send_event(UserEvent::UploadOk(text)); }
                                 Err(e)    => { let _ = proxy.send_event(UserEvent::UploadErr(format!("{e:#}"))); }
                             }

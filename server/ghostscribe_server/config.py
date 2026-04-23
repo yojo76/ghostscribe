@@ -43,6 +43,7 @@ class Settings:
     compute_type: str
     log_path: Path
     max_upload_mb: int
+    inference_timeout_s: int
     auth_token: str | None
 
     @property
@@ -68,5 +69,6 @@ def load_settings() -> Settings:
         compute_type=_env_str("GHOSTSCRIBE_COMPUTE_TYPE", "int8_float16"),
         log_path=Path(log_path_raw),
         max_upload_mb=_env_int("GHOSTSCRIBE_MAX_UPLOAD_MB", 25),
+        inference_timeout_s=_env_int("GHOSTSCRIBE_INFERENCE_TIMEOUT_S", 120),
         auth_token=_env_optional_str("GHOSTSCRIBE_AUTH_TOKEN"),
     )

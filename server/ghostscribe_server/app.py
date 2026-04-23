@@ -20,6 +20,7 @@ times and blow out VRAM.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -148,8 +149,16 @@ async def _do_transcribe(
 
     t1 = time.perf_counter()
     try:
-        result = await engine.transcribe(
-            audio_bytes, language=language, translate=translate
+        result = await asyncio.wait_for(
+            engine.transcribe(audio_bytes, language=language, translate=translate),
+            timeout=settings.inference_timeout_s,
+        )
+    except asyncio.TimeoutError:
+        REQUEST_COUNT.labels(endpoint=endpoint, status="504").inc()
+        log.error("Inference timed out after %ds for %s", settings.inference_timeout_s, label)
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"inference timed out after {settings.inference_timeout_s}s",
         )
     except Exception as exc:
         REQUEST_COUNT.labels(endpoint=endpoint, status="500").inc()

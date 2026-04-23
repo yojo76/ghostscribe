@@ -50,7 +50,7 @@ pub fn submit(cfg: &ClientConfig, audio: &[u8], filename: &str, mime: &str) -> R
     let bytes_sent = body.len();
 
     let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(60))
+        .timeout(Duration::from_secs(cfg.request_timeout_s))
         .build();
 
     let mut req = agent
