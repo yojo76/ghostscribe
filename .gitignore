@@ -12,6 +12,7 @@ dist/
 wheels/
 MANIFEST
 .venv/
+.venv-*/
 venv/
 env/
 ENV/

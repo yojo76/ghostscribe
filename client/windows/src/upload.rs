@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use crate::config::ClientConfig;
 
+#[derive(Debug)]
 pub struct Transcript {
     pub text: String,
     pub language: String,

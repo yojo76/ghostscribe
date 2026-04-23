@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import os
 import queue
 import shutil
 import signal
@@ -27,7 +28,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import sounddevice as sd
@@ -35,7 +36,11 @@ import soundfile as sf
 import httpx
 from pynput import keyboard, mouse
 
+from . import config as _config
+from . import tray as _tray
+from . import watcher as _watcher
 from .config import ClientConfig, load_config
+from .tray import MenuAction, TrayState
 
 SAMPLE_RATE = 16_000
 CHANNELS = 1
@@ -447,16 +452,19 @@ def inject_paste(delay_ms: int, use_shift: bool = False) -> None:
 
 def submit(
     cfg: ClientConfig, client: httpx.Client, audio: np.ndarray | None
-) -> None:
+) -> str | None:
+    """Encode + POST + paste the given buffer. Returns the transcript text
+    on HTTP success (possibly empty string for "no speech detected"), or
+    ``None`` on any failure (network, encoding, HTTP >= 400, non-JSON)."""
     if audio is None or len(audio) == 0:
         _eprint("[send] skipped: no audio captured")
-        return
+        return None
 
     try:
         payload, filename, mime = encode_audio(audio, cfg.audio_format)
     except Exception as exc:
         _eprint(f"[send] encoding failed: {exc}")
-        return
+        return None
 
     headers: dict[str, str] = {}
     if cfg.has_auth:
@@ -469,17 +477,17 @@ def submit(
         resp = client.post(cfg.url, files=files, headers=headers, timeout=30.0)
     except httpx.HTTPError as exc:
         _eprint(f"[send] failed: {exc}")
-        return
+        return None
     dt_ms = (time.perf_counter() - t0) * 1000
 
     if resp.status_code >= 400:
         _eprint(f"[send] HTTP {resp.status_code}: {resp.text.strip()}")
-        return
+        return None
     try:
         data = resp.json()
     except ValueError:
         _eprint(f"[send] non-JSON response: {resp.text[:200]}")
-        return
+        return None
 
     text = (data.get("text") or "").strip()
     lang = data.get("language", "?")
@@ -487,7 +495,7 @@ def submit(
     _eprint(f"[recv] {size_kb:.0f} kB in {dt_ms:.0f} ms (lang={lang} p={prob})")
     if not text:
         _eprint("[recv] empty transcript")
-        return
+        return ""
 
     pasted = False
     combo_used = "ctrl+v"
@@ -512,6 +520,7 @@ def submit(
     else:
         _eprint("[recv] transcript:")
     _eprint(text)
+    return text
 
 
 # --------------------------------------------------------------------------- #
@@ -749,6 +758,477 @@ def run(cfg: ClientConfig) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- #
+# Tray mode                                                                   #
+# --------------------------------------------------------------------------- #
+
+
+def _print_banner(cfg: ClientConfig, mode: str) -> None:
+    _eprint(f"GhostScribe client ({mode}) -> {cfg.url}")
+    if cfg.source_path is not None:
+        _eprint(f"config:   {cfg.source_path}")
+    else:
+        _eprint("config:   (defaults, no config file found)")
+    _eprint(f"trigger:  {cfg.trigger}")
+    _eprint(
+        "one_key:  "
+        + (cfg.one_key_trigger if cfg.one_key_trigger else "off")
+    )
+    _eprint(f"format:   {cfg.audio_format}")
+    _eprint(f"auth:     {'on' if cfg.has_auth else 'off'}")
+    _eprint(
+        f"paste:    {'on' if cfg.auto_paste else 'off'}"
+        f" (delay {cfg.paste_delay_ms} ms)"
+    )
+
+
+def _build_listeners(
+    trig: Trigger,
+    one_key: OneKeyLinuxTrigger | None,
+    start_recording: Callable[[], None],
+    stop_recording: Callable[[], None],
+    cancel_recording: Callable[[], None],
+) -> list[Any]:
+    """Build the pynput listeners that map trigger events onto record/stop/cancel.
+
+    Matches the state machine in :func:`run`: ``idle`` -> ``chord`` |
+    ``one_key`` -> ``idle`` | ``lockout``. Kept as a free function so
+    both :func:`run` and :func:`run_tray` can reuse it verbatim.
+    """
+    listeners: list[Any] = []
+    _mode = "idle"
+    _mode_lock = threading.Lock()
+
+    if isinstance(trig, MouseTrigger):
+        target_button = trig.button
+
+        def on_click(_x: int, _y: int, button: mouse.Button, pressed: bool) -> None:
+            nonlocal _mode
+            if button != target_button:
+                return
+            with _mode_lock:
+                if pressed and _mode == "idle":
+                    _mode = "chord"
+                    start_recording()
+                elif not pressed and _mode == "chord":
+                    _mode = "idle"
+                    stop_recording()
+
+        listeners.append(mouse.Listener(on_click=on_click))
+
+    else:
+        held: set[Any] = set()
+        key_trig: KeyTrigger = trig
+
+        def _chord_involved(key: Any) -> bool:
+            if key == key_trig.target:
+                return True
+            return any(key in fam for fam in key_trig.modifiers)
+
+        def _combo_satisfied() -> bool:
+            if key_trig.target not in held:
+                return False
+            return all(not fam.isdisjoint(held) for fam in key_trig.modifiers)
+
+        kb_listener: keyboard.Listener | None = None
+
+        def on_press(key: Any) -> None:
+            nonlocal _mode
+            k = kb_listener.canonical(key) if kb_listener else key
+            with _mode_lock:
+                held.add(k)
+                if _mode == "idle":
+                    if _combo_satisfied():
+                        _mode = "chord"
+                        start_recording()
+                    elif one_key is not None and k in one_key.key_family:
+                        _mode = "one_key"
+                        start_recording()
+                elif _mode == "one_key":
+                    if (
+                        one_key is not None
+                        and k not in one_key.key_family
+                        and not _chord_involved(k)
+                    ):
+                        _mode = "lockout"
+                        cancel_recording()
+
+        def on_release(key: Any) -> None:
+            nonlocal _mode
+            k = kb_listener.canonical(key) if kb_listener else key
+            with _mode_lock:
+                held.discard(k)
+                if _mode == "chord" and _chord_involved(k):
+                    _mode = "idle"
+                    stop_recording()
+                elif (
+                    _mode == "one_key"
+                    and one_key is not None
+                    and k in one_key.key_family
+                ):
+                    _mode = "idle"
+                    stop_recording()
+                elif (
+                    _mode == "lockout"
+                    and one_key is not None
+                    and k in one_key.key_family
+                ):
+                    _mode = "idle"
+
+        kb_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+        listeners.append(kb_listener)
+
+    if isinstance(trig, MouseTrigger) and one_key is not None:
+        ok_listener: keyboard.Listener | None = None
+
+        def on_ok_press(key: Any) -> None:
+            nonlocal _mode
+            k = ok_listener.canonical(key) if ok_listener else key
+            with _mode_lock:
+                if _mode == "idle" and k in one_key.key_family:
+                    _mode = "one_key"
+                    start_recording()
+                elif _mode == "one_key" and k not in one_key.key_family:
+                    _mode = "lockout"
+                    cancel_recording()
+
+        def on_ok_release(key: Any) -> None:
+            nonlocal _mode
+            k = ok_listener.canonical(key) if ok_listener else key
+            with _mode_lock:
+                if _mode == "one_key" and k in one_key.key_family:
+                    _mode = "idle"
+                    stop_recording()
+                elif _mode == "lockout" and k in one_key.key_family:
+                    _mode = "idle"
+
+        ok_listener = keyboard.Listener(on_press=on_ok_press, on_release=on_ok_release)
+        listeners.append(ok_listener)
+
+    return listeners
+
+
+def _log_file_path() -> Path:
+    """Default log path for Show log / future --log-file features.
+
+    Honours ``GHOSTSCRIBE_LOG_FILE``; otherwise falls back to
+    ``$XDG_STATE_HOME/ghostscribe/ghostscribe.log`` (or
+    ``~/.local/state/ghostscribe/ghostscribe.log``)."""
+    env = os.environ.get("GHOSTSCRIBE_LOG_FILE")
+    if env:
+        return Path(env)
+    state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
+    return Path(state) / "ghostscribe" / "ghostscribe.log"
+
+
+def _open_path_in_editor(path: Path) -> None:
+    """Resolve an editor in ``$VISUAL`` -> ``$EDITOR`` -> ``xdg-open`` order.
+
+    If ``$VISUAL``/``$EDITOR`` is set and there's a terminal emulator on
+    ``$PATH`` we launch the editor in a new terminal window so the user
+    doesn't need a pre-existing shell; otherwise we fall through to
+    ``xdg-open`` and let the desktop's file association pick a GUI tool.
+    """
+    for var in ("VISUAL", "EDITOR"):
+        ed = os.environ.get(var, "").strip()
+        if not ed:
+            continue
+        term = None
+        for cand in ("x-terminal-emulator", "gnome-terminal", "konsole", "xterm"):
+            if shutil.which(cand):
+                term = cand
+                break
+        if term is not None:
+            try:
+                subprocess.Popen([term, "-e", f'{ed} "{path}"'])
+                return
+            except OSError:
+                continue
+    # Final fallback: let the desktop handle it.
+    if shutil.which("xdg-open"):
+        subprocess.Popen(["xdg-open", str(path)])
+    else:
+        _eprint(f"[tray] no editor available; file is at {path}")
+
+
+def _reveal_in_file_manager(path: Path) -> None:
+    parent = path.parent
+    if shutil.which("xdg-open"):
+        subprocess.Popen(["xdg-open", str(parent)])
+    else:
+        _eprint(f"[tray] no file manager available; folder is {parent}")
+
+
+def _seed_config_if_missing(path: Path) -> None:
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_config.DEFAULT_CONFIG_TOML, encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def run_tray(initial: ClientConfig) -> int:
+    """Tray-driven run loop. Mirrors :func:`run` but routes transitions
+    through a pystray icon and applies safe config changes live.
+
+    Cold keys (``trigger``, ``one_key_trigger``, ``input_device``,
+    ``audio_format``) are captured here at startup; edits that touch
+    them surface a "Restart required" tooltip, and the Restart menu
+    item respawns the process via :func:`os.execv`.
+    """
+    try:
+        trig = parse_trigger(initial.trigger)
+    except ValueError as exc:
+        _eprint(f"[fatal] {exc}")
+        return 2
+    try:
+        one_key = parse_one_key_trigger(initial.one_key_trigger)
+    except ValueError as exc:
+        _eprint(f"[fatal] {exc}")
+        return 2
+
+    device = _resolve_input_device(initial.input_device)
+    _print_banner(initial, mode="tray")
+
+    # Thread-safe mutable config holder. Python lists are used as a
+    # single-cell "box" here; the lock guards *both* read and replace so
+    # a reader never observes a torn update across unrelated threads.
+    cfg_lock = threading.Lock()
+    cfg_box: list[ClientConfig] = [initial]
+
+    def get_cfg() -> ClientConfig:
+        with cfg_lock:
+            return cfg_box[0]
+
+    def set_cfg(new: ClientConfig) -> None:
+        with cfg_lock:
+            cfg_box[0] = new
+
+    pending_restart: set[str] = set()
+    pending_lock = threading.Lock()
+
+    recorder = Recorder(device)
+    try:
+        recorder.start_stream()
+    except sd.PortAudioError as exc:
+        _eprint(f"[fatal] could not open audio input: {exc}")
+        return 1
+
+    jobs: queue.Queue[np.ndarray | None] = queue.Queue()
+    stop_event = threading.Event()
+    recording = threading.Event()
+
+    # Forward-declared reference so callbacks can touch the tray after
+    # it's constructed below.
+    tray_box: list[_tray.Tray | None] = [None]
+
+    def on_state(state: TrayState, suffix: str = "") -> None:
+        t = tray_box[0]
+        if t is not None:
+            t.set_state(state, suffix)
+
+    def set_suffix(suffix: str) -> None:
+        t = tray_box[0]
+        if t is not None:
+            t.set_tooltip_suffix(suffix)
+
+    def mark_restart(cold_keys: tuple[str, ...]) -> None:
+        with pending_lock:
+            pending_restart.update(cold_keys)
+            snapshot = tuple(sorted(pending_restart))
+        on_state(TrayState.ERROR, f"restart required: {', '.join(snapshot)}")
+        _eprint(f"[config] restart required: {', '.join(snapshot)}")
+
+    http = httpx.Client()
+
+    def worker() -> None:
+        while True:
+            item = jobs.get()
+            if item is None:
+                return
+            on_state(TrayState.UPLOADING)
+            try:
+                result = submit(get_cfg(), http, item)
+            except Exception as exc:
+                _eprint(f"[send] unexpected error: {exc}")
+                on_state(TrayState.ERROR, str(exc)[:80])
+                continue
+            if result is None:
+                on_state(TrayState.ERROR, "upload failed")
+            elif result:
+                on_state(TrayState.IDLE, f"last: {len(result)} chars")
+            else:
+                on_state(TrayState.IDLE, "empty transcript")
+
+    worker_thread = threading.Thread(target=worker, name="gs-submit", daemon=True)
+    worker_thread.start()
+
+    def start_recording() -> None:
+        if recording.is_set():
+            return
+        recording.set()
+        recorder.begin()
+        on_state(TrayState.RECORDING)
+        _eprint("[rec] ...")
+
+    def stop_recording() -> None:
+        if not recording.is_set():
+            return
+        recording.clear()
+        audio = recorder.end()
+        n = 0 if audio is None else len(audio)
+        _eprint(f"[rec] stopped, {n * 2 / 1024:.0f} kB raw")
+        jobs.put(audio)
+        # worker() will transition to UPLOADING once it dequeues.
+
+    def cancel_recording() -> None:
+        if not recording.is_set():
+            return
+        recording.clear()
+        recorder.cancel()
+        on_state(TrayState.IDLE)
+        _eprint("[rec] cancelled")
+
+    listeners = _build_listeners(
+        trig, one_key, start_recording, stop_recording, cancel_recording
+    )
+    for ls in listeners:
+        ls.start()
+
+    # Config watcher.
+    watcher_thread: threading.Thread | None = None
+
+    def on_watcher_event(event: "_watcher.WatcherEvent") -> None:
+        if isinstance(event, _watcher.ReloadedEvent):
+            set_cfg(event.new_config)
+            if event.diff.hot_changed:
+                msg = f"reloaded: {', '.join(event.diff.hot_changed)}"
+                _eprint(f"[config] {msg}")
+                set_suffix(msg)
+            if event.diff.cold_changed:
+                mark_restart(event.diff.cold_changed)
+        elif isinstance(event, _watcher.ParseErrorEvent):
+            _eprint(f"[config] parse error: {event.message}")
+            on_state(TrayState.ERROR, "config parse error — see log")
+            t = tray_box[0]
+            if t is not None:
+                t.notify("GhostScribe — config parse error", event.message)
+        elif isinstance(event, _watcher.MissingEvent):
+            _eprint("[config] source file disappeared")
+            set_suffix("config file missing")
+
+    if initial.source_path is not None:
+        watcher_thread = _watcher.spawn(
+            initial.source_path, get_cfg, on_watcher_event, stop_event
+        )
+
+    def on_action(action: MenuAction) -> None:
+        cfg_now = get_cfg()
+        if action == MenuAction.QUIT:
+            stop_event.set()
+            t = tray_box[0]
+            if t is not None:
+                _tray.stop(t)
+        elif action == MenuAction.EDIT_CONFIG:
+            path = cfg_now.source_path or _config._candidate_paths(None)[0]
+            try:
+                _seed_config_if_missing(path)
+            except OSError as exc:
+                _eprint(f"[tray] could not seed {path}: {exc}")
+                return
+            _open_path_in_editor(path)
+        elif action == MenuAction.REVEAL_CONFIG:
+            if cfg_now.source_path is not None:
+                _reveal_in_file_manager(cfg_now.source_path)
+        elif action == MenuAction.RELOAD_CONFIG:
+            if cfg_now.source_path is None:
+                set_suffix("no config file to reload")
+                return
+            try:
+                new_cfg = _config.load_from(cfg_now.source_path)
+            except Exception as exc:
+                _eprint(f"[config] parse error: {exc}")
+                on_state(TrayState.ERROR, "config parse error — see log")
+                t = tray_box[0]
+                if t is not None:
+                    t.notify(
+                        "GhostScribe — config parse error",
+                        f"{type(exc).__name__}: {exc}",
+                    )
+                return
+            d = _config.diff(cfg_now, new_cfg)
+            set_cfg(new_cfg)
+            if d.is_empty():
+                set_suffix("reload: no changes")
+            else:
+                if d.hot_changed:
+                    set_suffix(f"reloaded: {', '.join(d.hot_changed)}")
+                if d.cold_changed:
+                    mark_restart(d.cold_changed)
+        elif action == MenuAction.SHOW_LOG:
+            lp = _log_file_path()
+            if lp.exists():
+                _open_path_in_editor(lp)
+            else:
+                set_suffix(f"no log file at {lp}")
+        elif action == MenuAction.RESTART:
+            stop_event.set()
+            # Drop --tray-disabling flags from argv so the child lands in
+            # the same mode; os.execv replaces the process image.
+            try:
+                os.execv(sys.executable, [sys.executable, "-m", "ghostscribe_client", *sys.argv[1:]])
+            except OSError as exc:
+                _eprint(f"[tray] restart failed: {exc}")
+        elif action == MenuAction.ABOUT:
+            c = get_cfg()
+            t = tray_box[0]
+            if t is not None:
+                t.notify(
+                    "GhostScribe",
+                    f"server: {c.url}\nconfig: {c.source_path or '(defaults)'}",
+                )
+
+    try:
+        tray_obj = _tray.build_tray(on_action, initial.source_path)
+    except RuntimeError as exc:
+        _eprint(f"[fatal] {exc}")
+        for ls in listeners:
+            ls.stop()
+        recorder.stop_stream()
+        http.close()
+        return 1
+    tray_box[0] = tray_obj
+
+    def _stop(_sig: int = 0, _frame: Any = None) -> None:
+        stop_event.set()
+        _tray.stop(tray_obj)
+
+    signal.signal(signal.SIGINT, _stop)
+    try:
+        signal.signal(signal.SIGTERM, _stop)
+    except (AttributeError, ValueError):
+        pass
+
+    try:
+        _tray.run_blocking(tray_obj)  # Blocks on the main thread.
+    finally:
+        _eprint("Shutting down...")
+        stop_event.set()
+        for ls in listeners:
+            ls.stop()
+        jobs.put(None)
+        worker_thread.join(timeout=5.0)
+        if watcher_thread is not None:
+            watcher_thread.join(timeout=2.0)
+        recorder.stop_stream()
+        http.close()
+
+    return 0
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="ghostscribe-client", description=__doc__)
     p.add_argument("--config", type=Path, help="Path to a TOML config file.")
@@ -785,6 +1265,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         help="Milliseconds to wait between clipboard write and Ctrl+V.",
     )
+    p.add_argument(
+        "--tray",
+        action="store_true",
+        help=(
+            "Run with a system-tray icon and live-reload the config on save. "
+            "Uses pystray; install extras with "
+            "`pip install 'ghostscribe-client[tray]'` if needed."
+        ),
+    )
     return p.parse_args(argv)
 
 
@@ -809,6 +1298,7 @@ def apply_overrides(cfg: ClientConfig, args: argparse.Namespace) -> ClientConfig
         server_url=changes.get("server_url", cfg.server_url),
         endpoint=changes.get("endpoint", cfg.endpoint),
         trigger=changes.get("trigger", cfg.trigger),
+        one_key_trigger=cfg.one_key_trigger,
         auth_token=changes.get("auth_token", cfg.auth_token),
         input_device=changes.get("input_device", cfg.input_device),
         audio_format=changes.get("audio_format", cfg.audio_format),
@@ -822,6 +1312,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     cfg = load_config(args.config)
     cfg = apply_overrides(cfg, args)
+    if getattr(args, "tray", False):
+        return run_tray(cfg)
     return run(cfg)
 
 
