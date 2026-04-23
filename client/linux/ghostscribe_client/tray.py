@@ -59,10 +59,10 @@ class TrayState(enum.Enum):
     @property
     def tooltip(self) -> str:
         return {
-            TrayState.IDLE:      "GhostScribe — idle",
-            TrayState.RECORDING: "GhostScribe — recording…",
-            TrayState.UPLOADING: "GhostScribe — uploading…",
-            TrayState.ERROR:     "GhostScribe — error (see log)",
+            TrayState.IDLE:      "GhostScribe - idle",
+            TrayState.RECORDING: "GhostScribe - recording...",
+            TrayState.UPLOADING: "GhostScribe - uploading...",
+            TrayState.ERROR:     "GhostScribe - error (see log)",
         }[self]
 
 
@@ -121,14 +121,14 @@ class Tray:
             self._state = state
         self._icon.icon = make_icon_image(state)
         self._icon.title = (
-            f"{state.tooltip} — {suffix}" if suffix else state.tooltip
+            f"{state.tooltip} - {suffix}" if suffix else state.tooltip
         )
 
     def set_tooltip_suffix(self, suffix: str) -> None:
         with self._state_lock:
             state = self._state
         self._icon.title = (
-            f"{state.tooltip} — {suffix}" if suffix else state.tooltip
+            f"{state.tooltip} - {suffix}" if suffix else state.tooltip
         )
 
     def notify(self, title: str, message: str) -> None:

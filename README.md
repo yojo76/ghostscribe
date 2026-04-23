@@ -163,10 +163,19 @@ On Linux you also need PortAudio for `sounddevice`, `xclip` for the
 clipboard push, and `xdotool` so the client can detect when the focused
 window is a terminal emulator and switch to `Ctrl+Shift+V`. For the
 optional tray UI you also need `libnotify` (for balloon notifications)
-and either AppIndicator or a working Xlib system tray on your panel:
+and the AppIndicator GI bindings so pystray uses the GTK backend instead
+of the bare Xlib fallback (the Xlib backend shows the icon but the menu
+does not open on GTK-based desktops like Cinnamon):
 
 ```bash
-sudo apt install libportaudio2 xclip xdotool libnotify-bin gir1.2-appindicator3-0.1
+sudo apt install libportaudio2 xclip xdotool libnotify-bin \
+    gir1.2-appindicator3-0.1 libgirepository-2.0-dev
+```
+
+Then install the `[tray]` extra so `PyGObject` is available inside the venv:
+
+```bash
+pip install -e ".[tray]"
 ```
 
 `xdotool` is optional — the client falls back to plain `Ctrl+V`
@@ -268,9 +277,10 @@ log keeps streaming to stderr. Right-click the icon for the menu:
   `xdg-open`.
 - **Reload now** — re-validates the file on demand without waiting for
   the 1 s `mtime` poll.
-- **Show log** — opens `$GHOSTSCRIBE_LOG_FILE` (or
-  `~/.local/state/ghostscribe/ghostscribe.log`) if it exists; otherwise
-  the tooltip says where it would be.
+- **Show log** — opens the log file in your editor. In tray mode all
+  stderr output is automatically teed to
+  `$GHOSTSCRIBE_LOG_FILE` (or `~/.local/state/ghostscribe/ghostscribe.log`);
+  the file is created on startup so this always works after the first run.
 - **Restart client** — `os.execv`-replaces the current process so cold
   config keys take effect.
 - **About GhostScribe** — libnotify balloon with the server URL and
@@ -292,10 +302,12 @@ log keeps streaming to stderr. Right-click the icon for the menu:
 - *Parse errors* surface as a libnotify balloon (or stderr line on
   systems without notify-send); the running config is not touched.
 
-Tray mode requires `pystray` and `Pillow` (already in
-`pyproject.toml`/`requirements.txt`). Wayland sessions are
-*not* supported by `pystray`'s Xlib backend; switch the session to
-X11 if your panel doesn't speak AppIndicator.
+Tray mode requires `pystray` and `Pillow` (already in `pyproject.toml`).
+For the menu to open on GTK-based desktops (Cinnamon, GNOME, MATE),
+pystray needs `PyGObject` so it can use the AppIndicator3 backend; install
+`libgirepository-2.0-dev` via `apt` then run `pip install -e ".[tray]"` (see
+Install above). Without it the icon appears but right-clicking does nothing.
+Wayland sessions are *not* supported; switch the session to X11.
 
 ### Notes / known limitations
 

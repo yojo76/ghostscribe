@@ -21,6 +21,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
+tray = [
+    "PyGObject>=3.48",
+]
 
 [project.scripts]
 ghostscribe-client = "ghostscribe_client.__main__:main"

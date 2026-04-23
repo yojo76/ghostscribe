@@ -56,6 +56,47 @@ def _eprint(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
+class _TeeStream:
+    """Writes to both the original stderr and an open log file."""
+
+    def __init__(self, original, log_fh):
+        self._orig = original
+        self._log = log_fh
+
+    def write(self, data: str) -> int:
+        self._orig.write(data)
+        self._orig.flush()
+        self._log.write(data)
+        self._log.flush()
+        return len(data)
+
+    def flush(self) -> None:
+        self._orig.flush()
+        self._log.flush()
+
+    def fileno(self):
+        return self._orig.fileno()
+
+    def __getattr__(self, name):
+        return getattr(self._orig, name)
+
+
+def _setup_tray_log() -> "IO[str] | None":
+    """Open (append) the tray log file and tee sys.stderr into it.
+
+    Returns the open file handle so the caller can close it on exit,
+    or None if the log directory/file could not be created.
+    """
+    lp = _log_file_path()
+    try:
+        lp.parent.mkdir(parents=True, exist_ok=True)
+        fh = lp.open("a", encoding="utf-8")
+        sys.stderr = _TeeStream(sys.stderr, fh)  # type: ignore[assignment]
+        return fh
+    except OSError:
+        return None
+
+
 def _resolve_input_device(raw: str) -> int | str | None:
     raw = raw.strip()
     if not raw:
@@ -979,6 +1020,8 @@ def run_tray(initial: ClientConfig) -> int:
     them surface a "Restart required" tooltip, and the Restart menu
     item respawns the process via :func:`os.execv`.
     """
+    log_fh = _setup_tray_log()
+
     try:
         trig = parse_trigger(initial.trigger)
     except ValueError as exc:
@@ -1225,6 +1268,9 @@ def run_tray(initial: ClientConfig) -> int:
             watcher_thread.join(timeout=2.0)
         recorder.stop_stream()
         http.close()
+        if log_fh is not None:
+            sys.stderr = sys.stderr._orig  # type: ignore[union-attr]
+            log_fh.close()
 
     return 0
 
