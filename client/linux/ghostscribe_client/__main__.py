@@ -60,22 +60,29 @@ def _eprint(msg: str) -> None:
 
 
 class _TeeStream:
-    """Writes to both the original stderr and an open log file."""
+    """Writes to both the original stderr and an open log file.
 
-    def __init__(self, original, log_fh):
+    Set ``paused = True`` to stop writing to the log file without
+    uninstalling the tee. stderr always gets every line regardless.
+    """
+
+    def __init__(self, original, log_fh, paused: bool = False):
         self._orig = original
         self._log = log_fh
+        self.paused = paused
 
     def write(self, data: str) -> int:
         self._orig.write(data)
         self._orig.flush()
-        self._log.write(data)
-        self._log.flush()
+        if not self.paused:
+            self._log.write(data)
+            self._log.flush()
         return len(data)
 
     def flush(self) -> None:
         self._orig.flush()
-        self._log.flush()
+        if not self.paused:
+            self._log.flush()
 
     def fileno(self):
         return self._orig.fileno()
@@ -85,16 +92,17 @@ class _TeeStream:
 
 
 def _setup_tray_log() -> "IO[str] | None":
-    """Open (append) the tray log file and tee sys.stderr into it.
+    """Install a tee on sys.stderr that can write to the log file on demand.
 
-    Returns the open file handle so the caller can close it on exit,
-    or None if the log directory/file could not be created.
+    Starts paused (logging off). The caller enables logging by setting
+    ``sys.stderr.paused = False``. Returns the open file handle so the
+    caller can close it on exit, or None if the file could not be created.
     """
     lp = _log_file_path()
     try:
         lp.parent.mkdir(parents=True, exist_ok=True)
         fh = lp.open("a", encoding="utf-8")
-        sys.stderr = _TeeStream(sys.stderr, fh)  # type: ignore[assignment]
+        sys.stderr = _TeeStream(sys.stderr, fh, paused=True)  # type: ignore[assignment]
         return fh
     except OSError:
         return None
@@ -1232,6 +1240,12 @@ def run_tray(initial: ClientConfig) -> int:
                     set_suffix(f"reloaded: {', '.join(d.hot_changed)}")
                 if d.cold_changed:
                     mark_restart(d.cold_changed)
+        elif action == MenuAction.TOGGLE_LOG:
+            if isinstance(sys.stderr, _TeeStream):
+                sys.stderr.paused = not sys.stderr.paused
+                state = "on" if not sys.stderr.paused else "off"
+                _eprint(f"[log] logging {state}")
+                set_suffix(f"logging {state}")
         elif action == MenuAction.SHOW_LOG:
             lp = _log_file_path()
             if lp.exists():
@@ -1255,8 +1269,11 @@ def run_tray(initial: ClientConfig) -> int:
                     f"server: {c.url}\nconfig: {c.source_path or '(defaults)'}",
                 )
 
+    def get_logging() -> bool:
+        return isinstance(sys.stderr, _TeeStream) and not sys.stderr.paused
+
     try:
-        tray_obj = _tray.build_tray(on_action, initial.source_path)
+        tray_obj = _tray.build_tray(on_action, initial.source_path, get_logging)
     except RuntimeError as exc:
         _eprint(f"[fatal] {exc}")
         for ls in listeners:

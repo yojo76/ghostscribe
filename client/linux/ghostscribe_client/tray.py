@@ -72,6 +72,7 @@ class MenuAction(enum.Enum):
     EDIT_CONFIG    = "edit-config"
     REVEAL_CONFIG  = "reveal-config"
     RELOAD_CONFIG  = "reload-config"
+    TOGGLE_LOG     = "toggle-log"
     SHOW_LOG       = "show-log"
     RESTART        = "restart"
     ABOUT          = "about"
@@ -144,11 +145,13 @@ def build_menu(
     on_action: Callable[[MenuAction], None],
     has_config: bool,
     can_reveal: bool,
+    get_logging: Callable[[], bool],
 ):
     """Construct the ``pystray.Menu`` object.
 
     ``has_config`` enables the Reveal/Reload items; when there is no file
     on disk yet, those wouldn't do anything useful.
+    ``get_logging`` is called each time the menu opens to reflect live state.
     """
     if pystray is None:
         raise RuntimeError("pystray is required; `pip install pystray`.")
@@ -166,7 +169,10 @@ def build_menu(
         Item("Reload now",                 _cb(MenuAction.RELOAD_CONFIG),
              enabled=has_config),
         Menu.SEPARATOR,
-        Item("Show log",                   _cb(MenuAction.SHOW_LOG)),
+        Item("Logging",                    _cb(MenuAction.TOGGLE_LOG),
+             checked=lambda _item: get_logging()),
+        Item("Show log",                   _cb(MenuAction.SHOW_LOG),
+             enabled=lambda _item: get_logging()),
         Item("Restart client",             _cb(MenuAction.RESTART)),
         Menu.SEPARATOR,
         Item("About GhostScribe",          _cb(MenuAction.ABOUT)),
@@ -177,6 +183,7 @@ def build_menu(
 def build_tray(
     on_action: Callable[[MenuAction], None],
     config_path: Optional[Path],
+    get_logging: Callable[[], bool],
 ) -> Tray:
     """Construct a ``Tray`` wrapper ready for ``.run()`` on the main thread.
 
@@ -190,6 +197,7 @@ def build_tray(
         on_action,
         has_config=config_path is not None,
         can_reveal=config_path is not None,
+        get_logging=get_logging,
     )
     image = make_icon_image(TrayState.IDLE)
     icon = pystray.Icon(
