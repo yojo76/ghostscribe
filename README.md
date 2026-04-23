@@ -186,7 +186,8 @@ ignore `Ctrl+V`, so install both if you dictate into terminals.
 ### Usage
 
 ```bash
-python -m ghostscribe_client
+python -m ghostscribe_client            # tray mode (default)
+python -m ghostscribe_client --no-tray  # command-line mode, stderr only
 ```
 
 Hold the configured trigger (default: mouse button `x2` — the thumb
@@ -258,17 +259,14 @@ fires first, one-key is dormant for that take.
 
 `--endpoint /v1/en`, `--server-url ...`, `--trigger key:ctrl+g`,
 `--auth-token ...`, `--input-device "USB Mic"`, `--audio-format wav`,
-`--no-paste`, `--paste-delay-ms 100`, `--tray`.
+`--no-paste`, `--paste-delay-ms 100`, `--no-tray`.
 
-### Tray mode
+### Tray mode (default)
 
-```bash
-python -m ghostscribe_client --tray
-```
-
-`--tray` puts a state-tinted icon (idle/recording/uploading/error) in
-the system tray and stays attached to the controlling terminal so its
-log keeps streaming to stderr. Right-click the icon for the menu:
+Tray mode is the default. Run `python -m ghostscribe_client` and a
+state-tinted icon (idle/recording/uploading/error) appears in the system
+tray. All output is teed to the log file automatically. Pass `--no-tray`
+to run in command-line mode instead. Right-click the icon for the menu:
 
 - **Edit config…** — opens the active `config.toml` in `$VISUAL` →
   `$EDITOR` → `xdg-open`. If no file exists yet, the client first seeds

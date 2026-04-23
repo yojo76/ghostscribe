@@ -3,15 +3,18 @@
 Hold the configured trigger (a mouse button or keyboard combo); while it's
 held, 16 kHz mono 16-bit audio is captured. On release the buffer is
 encoded (FLAC by default), POSTed to the configured endpoint, and the
-returned transcript is pushed to the X11 CLIPBOARD via ``xclip``. Timing
-and status info goes to stderr.
+returned transcript is pushed to the X11 CLIPBOARD via ``xclip``.
+
+By default the client runs in tray mode: a colour-coded system-tray icon
+with a right-click menu, live config reload, and a log file at
+~/.local/state/ghostscribe/ghostscribe.log. Pass --no-tray to run in
+command-line mode with output going to stderr only.
 
 Usage:
-    python -m ghostscribe_client
+    python -m ghostscribe_client                      # tray mode (default)
+    python -m ghostscribe_client --no-tray            # command-line mode
     python -m ghostscribe_client --config ~/my_gs.toml
     python -m ghostscribe_client --trigger key:ctrl+g
-
-Press Ctrl+C in the terminal to exit.
 """
 
 from __future__ import annotations
@@ -1237,8 +1240,8 @@ def run_tray(initial: ClientConfig) -> int:
                 set_suffix(f"no log file at {lp}")
         elif action == MenuAction.RESTART:
             stop_event.set()
-            # Drop --tray-disabling flags from argv so the child lands in
-            # the same mode; os.execv replaces the process image.
+            # os.execv replaces the process image; argv is passed through
+            # unchanged so --no-tray is preserved if the user set it.
             try:
                 os.execv(sys.executable, [sys.executable, "-m", "ghostscribe_client", *sys.argv[1:]])
             except OSError as exc:
@@ -1330,12 +1333,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Milliseconds to wait between clipboard write and Ctrl+V.",
     )
     p.add_argument(
-        "--tray",
+        "--no-tray",
+        dest="no_tray",
         action="store_true",
         help=(
-            "Run with a system-tray icon and live-reload the config on save. "
-            "Uses pystray; install extras with "
-            "`pip install 'ghostscribe-client[tray]'` if needed."
+            "Run in command-line mode (no tray icon). "
+            "Logs to stderr only. Default is tray mode."
         ),
     )
     return p.parse_args(argv)
@@ -1376,9 +1379,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     cfg = load_config(args.config)
     cfg = apply_overrides(cfg, args)
-    if getattr(args, "tray", False):
-        return run_tray(cfg)
-    return run(cfg)
+    if getattr(args, "no_tray", False):
+        return run(cfg)
+    return run_tray(cfg)
 
 
 if __name__ == "__main__":
