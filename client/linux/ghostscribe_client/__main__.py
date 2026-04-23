@@ -339,6 +339,50 @@ class Recorder:
         with self._lock:
             self._chunks.clear()
 
+    def checkpoint(self) -> np.ndarray | None:
+        """Drain and return audio collected so far without stopping the stream."""
+        with self._lock:
+            if not self._chunks:
+                return None
+            audio = np.concatenate(self._chunks, axis=0)
+            self._chunks = []
+        return audio
+
+
+_CHUNK_INTERVAL = 2 * 60.0  # auto-send every 2 minutes while recording
+
+
+class _ChunkTimer:
+    """Calls *on_chunk* every _CHUNK_INTERVAL seconds until stopped."""
+
+    def __init__(self, on_chunk: Callable[[], None]) -> None:
+        self._on_chunk = on_chunk
+        self._timer: threading.Timer | None = None
+        self._active = False
+
+    def start(self) -> None:
+        self._active = True
+        self._arm()
+
+    def stop(self) -> None:
+        self._active = False
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+
+    def _arm(self) -> None:
+        t = threading.Timer(_CHUNK_INTERVAL, self._fire)
+        t.daemon = True
+        t.start()
+        self._timer = t
+
+    def _fire(self) -> None:
+        if not self._active:
+            return
+        self._on_chunk()
+        if self._active:
+            self._arm()
+
 
 # --------------------------------------------------------------------------- #
 # Encoding                                                                    #
@@ -685,14 +729,24 @@ def run(cfg: ClientConfig) -> int:
         worker_thread = threading.Thread(target=worker, name="gs-submit", daemon=True)
         worker_thread.start()
 
+        def _on_auto_chunk() -> None:
+            audio = recorder.checkpoint()
+            if audio is not None and len(audio) > 0:
+                _eprint(f"[rec] auto-chunk, {len(audio) * 2 / 1024:.0f} kB")
+                jobs.put(audio)
+
+        _chunk_timer = _ChunkTimer(_on_auto_chunk)
+
         def start_recording() -> None:
             if recording.is_set():
                 return
             recording.set()
             recorder.begin()
             _eprint("[rec] ...")
+            _chunk_timer.start()
 
         def stop_recording() -> None:
+            _chunk_timer.stop()
             if not recording.is_set():
                 return
             recording.clear()
@@ -702,6 +756,7 @@ def run(cfg: ClientConfig) -> int:
             jobs.put(audio)
 
         def _cancel_recording() -> None:
+            _chunk_timer.stop()
             if not recording.is_set():
                 return
             recording.clear()
@@ -1156,9 +1211,19 @@ def run_tray(initial: ClientConfig) -> int:
                 on_state(TrayState.IDLE, f"last: {len(result)} chars")
             else:
                 on_state(TrayState.IDLE, "empty transcript")
+            if recording.is_set():
+                on_state(TrayState.RECORDING)
 
     worker_thread = threading.Thread(target=worker, name="gs-submit", daemon=True)
     worker_thread.start()
+
+    def _on_auto_chunk() -> None:
+        audio = recorder.checkpoint()
+        if audio is not None and len(audio) > 0:
+            _eprint(f"[rec] auto-chunk, {len(audio) * 2 / 1024:.0f} kB")
+            jobs.put(audio)
+
+    _chunk_timer = _ChunkTimer(_on_auto_chunk)
 
     def start_recording() -> None:
         if recording.is_set():
@@ -1167,8 +1232,10 @@ def run_tray(initial: ClientConfig) -> int:
         recorder.begin()
         on_state(TrayState.RECORDING)
         _eprint("[rec] ...")
+        _chunk_timer.start()
 
     def stop_recording() -> None:
+        _chunk_timer.stop()
         if not recording.is_set():
             return
         recording.clear()
@@ -1179,6 +1246,7 @@ def run_tray(initial: ClientConfig) -> int:
         # worker() will transition to UPLOADING once it dequeues.
 
     def cancel_recording() -> None:
+        _chunk_timer.stop()
         if not recording.is_set():
             return
         recording.clear()
