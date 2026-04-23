@@ -161,10 +161,12 @@ $EDITOR ~/.config/ghostscribe/config.toml
 
 On Linux you also need PortAudio for `sounddevice`, `xclip` for the
 clipboard push, and `xdotool` so the client can detect when the focused
-window is a terminal emulator and switch to `Ctrl+Shift+V`:
+window is a terminal emulator and switch to `Ctrl+Shift+V`. For the
+optional tray UI you also need `libnotify` (for balloon notifications)
+and either AppIndicator or a working Xlib system tray on your panel:
 
 ```bash
-sudo apt install libportaudio2 xclip xdotool
+sudo apt install libportaudio2 xclip xdotool libnotify-bin gir1.2-appindicator3-0.1
 ```
 
 `xdotool` is optional — the client falls back to plain `Ctrl+V`
@@ -247,7 +249,53 @@ fires first, one-key is dormant for that take.
 
 `--endpoint /v1/en`, `--server-url ...`, `--trigger key:ctrl+g`,
 `--auth-token ...`, `--input-device "USB Mic"`, `--audio-format wav`,
-`--no-paste`, `--paste-delay-ms 100`.
+`--no-paste`, `--paste-delay-ms 100`, `--tray`.
+
+### Tray mode
+
+```bash
+python -m ghostscribe_client --tray
+```
+
+`--tray` puts a state-tinted icon (idle/recording/uploading/error) in
+the system tray and stays attached to the controlling terminal so its
+log keeps streaming to stderr. Right-click the icon for the menu:
+
+- **Edit config…** — opens the active `config.toml` in `$VISUAL` →
+  `$EDITOR` → `xdg-open`. If no file exists yet, the client first seeds
+  `~/.config/ghostscribe/config.toml` with a commented template.
+- **Reveal config in file manager** — opens the parent folder via
+  `xdg-open`.
+- **Reload now** — re-validates the file on demand without waiting for
+  the 1 s `mtime` poll.
+- **Show log** — opens `$GHOSTSCRIBE_LOG_FILE` (or
+  `~/.local/state/ghostscribe/ghostscribe.log`) if it exists; otherwise
+  the tooltip says where it would be.
+- **Restart client** — `os.execv`-replaces the current process so cold
+  config keys take effect.
+- **About GhostScribe** — libnotify balloon with the server URL and
+  active config path.
+- **Quit** — exit cleanly.
+
+**Live config reload.** The watcher polls the active config file's
+`mtime` every second. When the file changes:
+
+- *Hot keys* (`server_url`, `endpoint`, `auth_token`, `auto_paste`,
+  `paste_delay_ms`) swap in atomically under a `threading.Lock`. The
+  next upload sees the new values; the tooltip updates to e.g.
+  `reloaded: server_url, auto_paste`.
+- *Cold keys* (`trigger`, `one_key_trigger`, `input_device`,
+  `audio_format`) cannot be hot-swapped because the audio stream and
+  pynput listeners capture them at startup. The icon turns amber and
+  the tooltip says `restart required: …`. Pick **Restart client** to
+  apply.
+- *Parse errors* surface as a libnotify balloon (or stderr line on
+  systems without notify-send); the running config is not touched.
+
+Tray mode requires `pystray` and `Pillow` (already in
+`pyproject.toml`/`requirements.txt`). Wayland sessions are
+*not* supported by `pystray`'s Xlib backend; switch the session to
+X11 if your panel doesn't speak AppIndicator.
 
 ### Notes / known limitations
 
