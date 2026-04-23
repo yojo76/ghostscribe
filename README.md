@@ -160,15 +160,15 @@ $EDITOR ~/.config/ghostscribe/config.toml
 ```
 
 On Linux you also need PortAudio for `sounddevice`, `xclip` for the
-clipboard push, and `xdotool` so the client can detect when the focused
-window is a terminal emulator and switch to `Ctrl+Shift+V`. For the
+clipboard push, and `xdotool` + `xprop` so the client can detect when the
+focused window is a terminal emulator and switch to `Ctrl+Shift+V`. For the
 optional tray UI you also need `libnotify` (for balloon notifications)
 and the AppIndicator GI bindings so pystray uses the GTK backend instead
 of the bare Xlib fallback (the Xlib backend shows the icon but the menu
 does not open on GTK-based desktops like Cinnamon):
 
 ```bash
-sudo apt install libportaudio2 xclip xdotool libnotify-bin \
+sudo apt install libportaudio2 xclip xdotool x11-utils libnotify-bin \
     gir1.2-appindicator3-0.1 libgirepository-2.0-dev
 ```
 
@@ -178,10 +178,10 @@ Then install the `[tray]` extra so `PyGObject` is available inside the venv:
 pip install -e ".[tray]"
 ```
 
-`xdotool` is optional — the client falls back to plain `Ctrl+V`
-everywhere if it is missing — but most terminal emulators (GNOME
-Terminal, Konsole, kitty, alacritty, wezterm, ...) intentionally ignore
-`Ctrl+V`, so install it if you dictate into terminals.
+`xdotool` and `xprop` are optional — the client falls back to plain
+`Ctrl+V` everywhere if either is missing — but most terminal emulators
+(GNOME Terminal, Konsole, kitty, alacritty, wezterm, ...) intentionally
+ignore `Ctrl+V`, so install both if you dictate into terminals.
 
 ### Usage
 
@@ -320,9 +320,12 @@ Wayland sessions are *not* supported; switch the session to X11.
   don't concatenate), injects paste, then restores the original after
   `paste_delay_ms`. If you copy something **between** the paste and the
   restore, the restore will clobber it.
-- Terminal detection uses `xdotool getactivewindow getwindowclassname`:
+- Terminal detection uses `xdotool getactivewindow` + `xprop WM_CLASS`:
   known terminal emulators receive `Ctrl+Shift+V`; everything else
-  receives `Ctrl+V`.
+  receives `Ctrl+V`. Each paste logs `[paste] window='ClassName' -> ctrl+...`
+  so you can see exactly what was detected. Electron apps (Cursor, VS Code)
+  cannot be distinguished from their embedded terminal panes at the X11 level
+  — both share the same window class.
 
 ## Security note
 

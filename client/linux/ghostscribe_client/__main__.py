@@ -437,28 +437,45 @@ _TERMINAL_CLASSES: frozenset[str] = frozenset(
 )
 
 
-def detect_terminal_focus() -> bool:
-    """Return True if the X11 foreground window looks like a terminal emulator.
+def detect_terminal_focus() -> tuple[bool, str]:
+    """Return (is_terminal, window_class) for the X11 foreground window.
 
-    Uses ``xdotool getactivewindow getwindowclassname``; if xdotool is missing
-    or the call fails we silently return False, which preserves the previous
-    Ctrl+V-only behaviour.
+    Uses xdotool to get the active window ID then xprop to read WM_CLASS.
+    xdotool's getwindowclassname subcommand does not exist in all versions,
+    so we use xprop which is universally available on X11.
+    Returns (False, "") if either tool is missing or the call fails.
     """
     xdotool = shutil.which("xdotool")
-    if xdotool is None:
-        return False
+    xprop = shutil.which("xprop")
+    if xdotool is None or xprop is None:
+        return False, ""
     try:
-        result = subprocess.run(
-            [xdotool, "getactivewindow", "getwindowclassname"],
+        win_result = subprocess.run(
+            [xdotool, "getactivewindow"],
             capture_output=True,
             timeout=2,
         )
     except subprocess.SubprocessError:
-        return False
-    if result.returncode != 0:
-        return False
-    cls = result.stdout.decode("utf-8", errors="replace").strip()
-    return cls.lower() in _TERMINAL_CLASSES
+        return False, ""
+    if win_result.returncode != 0:
+        return False, ""
+    win_id = win_result.stdout.decode("utf-8", errors="replace").strip()
+    try:
+        prop_result = subprocess.run(
+            [xprop, "-id", win_id, "WM_CLASS"],
+            capture_output=True,
+            timeout=2,
+        )
+    except subprocess.SubprocessError:
+        return False, ""
+    if prop_result.returncode != 0:
+        return False, ""
+    # Output format: WM_CLASS(STRING) = "instance", "ClassName"
+    # Check both instance and class name against the known-terminal set.
+    raw = prop_result.stdout.decode("utf-8", errors="replace")
+    names = [s.strip().strip('"') for s in raw.split("=", 1)[-1].split(",")]
+    cls = ", ".join(names)
+    return any(n.lower() in _TERMINAL_CLASSES for n in names), cls
 
 
 def inject_paste(delay_ms: int, use_shift: bool = False) -> None:
@@ -545,8 +562,9 @@ def submit(
         # Trailing space so back-to-back takes don't concatenate in the
         # target field. Only applied to the pasted copy — not to _eprint().
         if copy_to_clipboard(text + " "):
-            use_shift = detect_terminal_focus()
+            use_shift, win_cls = detect_terminal_focus()
             combo_used = "ctrl+shift+v" if use_shift else "ctrl+v"
+            _eprint(f"[paste] window={win_cls!r} -> {combo_used}")
             try:
                 inject_paste(cfg.paste_delay_ms, use_shift=use_shift)
                 pasted = True
@@ -602,10 +620,10 @@ def run(cfg: ClientConfig) -> int:
 
     if cfg.auto_paste and shutil.which("xclip") is None:
         _eprint("[warn] auto_paste is on but xclip is not installed.")
-    if cfg.auto_paste and shutil.which("xdotool") is None:
+    if cfg.auto_paste and (shutil.which("xdotool") is None or shutil.which("xprop") is None):
         _eprint(
-            "[warn] xdotool not found; terminal-focused windows will receive "
-            "Ctrl+V instead of Ctrl+Shift+V. Install with: sudo apt install xdotool"
+            "[warn] xdotool or xprop not found; terminal-focused windows will receive "
+            "Ctrl+V instead of Ctrl+Shift+V. Install with: sudo apt install xdotool x11-utils"
         )
 
     recorder = Recorder(device)

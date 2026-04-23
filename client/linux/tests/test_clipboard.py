@@ -111,11 +111,31 @@ def test_copy_to_clipboard_failure(
 # --------------------------------------------------------------------------- #
 
 
+def _wm_class_output(instance: str, klass: str) -> bytes:
+    return f'WM_CLASS(STRING) = "{instance}", "{klass}"\n'.encode()
+
+
+def _make_xdotool_xprop_mock(wm_class_stdout: bytes, xdotool_rc: int = 0, xprop_rc: int = 0):
+    """Return a subprocess.run mock that simulates xdotool then xprop calls."""
+    calls: list[int] = [0]
+
+    def _run(*a, **kw):
+        calls[0] += 1
+        if calls[0] == 1:  # xdotool getactivewindow
+            return _CompletedProcess(xdotool_rc, stdout=b"99999")
+        else:              # xprop -id WM_CLASS
+            return _CompletedProcess(xprop_rc, stdout=wm_class_stdout)
+
+    return _run
+
+
 def test_detect_terminal_focus_missing_xdotool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(gsclient.shutil, "which", lambda _: None)
-    assert gsclient.detect_terminal_focus() is False
+    is_term, cls = gsclient.detect_terminal_focus()
+    assert is_term is False
+    assert cls == ""
 
 
 @pytest.mark.parametrize(
@@ -129,40 +149,45 @@ def test_detect_terminal_focus_missing_xdotool(
         ("firefox", False),
         ("thunderbird", False),
         ("Code", False),
-        ("", False),
     ],
 )
 def test_detect_terminal_focus_by_class(
     monkeypatch: pytest.MonkeyPatch, classname: str, expected: bool
 ) -> None:
-    monkeypatch.setattr(gsclient.shutil, "which", lambda _: "/usr/bin/xdotool")
+    monkeypatch.setattr(gsclient.shutil, "which", lambda _: "/usr/bin/tool")
     monkeypatch.setattr(
         gsclient.subprocess,
         "run",
-        lambda *a, **kw: _CompletedProcess(0, stdout=classname.encode()),
+        _make_xdotool_xprop_mock(_wm_class_output(classname, classname)),
     )
-    assert gsclient.detect_terminal_focus() is expected
+    is_term, cls = gsclient.detect_terminal_focus()
+    assert is_term is expected
+    assert classname in cls
 
 
 def test_detect_terminal_focus_nonzero_exit_treated_as_non_terminal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(gsclient.shutil, "which", lambda _: "/usr/bin/xdotool")
+    monkeypatch.setattr(gsclient.shutil, "which", lambda _: "/usr/bin/tool")
     monkeypatch.setattr(
         gsclient.subprocess,
         "run",
-        lambda *a, **kw: _CompletedProcess(1, stdout=b"Alacritty"),
+        _make_xdotool_xprop_mock(b"", xdotool_rc=1),
     )
-    assert gsclient.detect_terminal_focus() is False
+    is_term, cls = gsclient.detect_terminal_focus()
+    assert is_term is False
+    assert cls == ""
 
 
 def test_detect_terminal_focus_subprocess_error_returns_false(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(gsclient.shutil, "which", lambda _: "/usr/bin/xdotool")
+    monkeypatch.setattr(gsclient.shutil, "which", lambda _: "/usr/bin/tool")
 
     def _boom(*_a: Any, **_kw: Any) -> None:
         raise subprocess.TimeoutExpired(cmd="xdotool", timeout=2)
 
     monkeypatch.setattr(gsclient.subprocess, "run", _boom)
-    assert gsclient.detect_terminal_focus() is False
+    is_term, cls = gsclient.detect_terminal_focus()
+    assert is_term is False
+    assert cls == ""

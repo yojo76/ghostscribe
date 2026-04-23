@@ -10,6 +10,11 @@ from __future__ import annotations
 
 import pytest
 
+try:
+    import pystray  # type: ignore[import-not-found]
+except ModuleNotFoundError:
+    pystray = None  # type: ignore[assignment]
+
 from ghostscribe_client import tray as _tray
 from ghostscribe_client.tray import MenuAction, TrayState
 
@@ -72,7 +77,8 @@ def test_build_menu_emits_typed_actions_in_order() -> None:
     # Pull the user-visible menu items in declaration order, skipping
     # separators (pystray exposes them as `MenuItem` instances with no
     # text). Each callable triggers the wired callback.
-    items = [it for it in menu.items if getattr(it, "text", None)]
+    sep_text = getattr(pystray.Menu.SEPARATOR, "text", None)
+    items = [it for it in menu.items if getattr(it, "text", None) and it.text != sep_text]
     labels = [it.text for it in items]
     assert labels == [
         "Edit config…",
@@ -85,8 +91,7 @@ def test_build_menu_emits_typed_actions_in_order() -> None:
     ]
 
     for it in items:
-        # The pystray callback signature is (icon, item).
-        it(None, it)
+        it(None)
 
     assert fired == [
         MenuAction.EDIT_CONFIG,

@@ -72,7 +72,7 @@ def sample_audio() -> np.ndarray:
 def neutralize_io(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stub out subprocess + pynput-backed paste primitives by default."""
     monkeypatch.setattr(gsclient, "inject_paste", lambda *a, **kw: None)
-    monkeypatch.setattr(gsclient, "detect_terminal_focus", lambda: False)
+    monkeypatch.setattr(gsclient, "detect_terminal_focus", lambda: (False, "firefox"))
     monkeypatch.setattr(gsclient, "read_clipboard", lambda: None)
     monkeypatch.setattr(gsclient, "copy_to_clipboard", lambda _text: True)
     monkeypatch.setattr(gsclient.time, "sleep", lambda _s: None)
@@ -165,7 +165,7 @@ def test_submit_terminal_focus_triggers_shift(
         captured["use_shift"] = use_shift
         captured["delay_ms"] = delay_ms
 
-    monkeypatch.setattr(gsclient, "detect_terminal_focus", lambda: True)
+    monkeypatch.setattr(gsclient, "detect_terminal_focus", lambda: (True, "Alacritty"))
     monkeypatch.setattr(gsclient, "inject_paste", fake_inject)
 
     http = _FakeHttpxClient(
