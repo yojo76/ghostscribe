@@ -1,0 +1,39 @@
+[package]
+name = "ghostscribe-client-linux"
+version = "0.1.0"
+edition = "2021"
+authors = ["GhostScribe"]
+description = "Linux push-to-talk client for GhostScribe"
+
+[[bin]]
+name = "ghostscribe-client"
+path = "src/main.rs"
+
+[dependencies]
+# Shared with Windows client
+cpal    = "0.15"
+hound   = "3.5"
+flacenc = "0.4"
+ureq    = { version = "2.10", default-features = false, features = ["tls"] }
+serde   = { version = "1", features = ["derive"] }
+toml    = "0.8"
+anyhow  = "1"
+rand    = "0.8"
+arc-swap = "1"
+
+# Linux input: X11-backed global key listener + key injection via XTest
+rdev    = "0.5"
+
+# Clipboard: X11/Wayland backed, maintains selection in a background thread
+arboard = "3"
+
+# System tray + event loop (supports Linux via libappindicator3)
+tray-icon = "0.19"
+tao       = "0.30"
+
+[profile.release]
+opt-level = "z"
+lto       = true
+codegen-units = 1
+strip     = true
+panic     = "abort"
