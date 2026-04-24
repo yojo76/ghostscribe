@@ -17,6 +17,7 @@ struct RawConfig {
     request_timeout_s: Option<u64>,
     smart_space: Option<bool>,
     continuation_window_s: Option<u32>,
+    max_record_s: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -35,6 +36,7 @@ pub struct ClientConfig {
     pub request_timeout_s: u64,
     pub smart_space: bool,
     pub continuation_window_s: u32,
+    pub max_record_s: u32,
     pub source_path: Option<PathBuf>,
 }
 
@@ -70,6 +72,7 @@ pub const DEFAULT_CONFIG_TOML: &str = r#"# GhostScribe Windows client config
 # request_timeout_s    = 30                 # HTTP POST timeout in seconds
 # smart_space          = true               # prepend space when continuing dictation
 # continuation_window_s = 30               # seconds after last paste that counts as continuation
+# max_record_s         = 300               # auto-stop recording after this many seconds (0 = off)
 "#;
 
 fn defaults() -> ClientConfig {
@@ -86,6 +89,7 @@ fn defaults() -> ClientConfig {
         request_timeout_s: 30,
         smart_space: true,
         continuation_window_s: 30,
+        max_record_s: 300,
         source_path: None,
     }
 }
@@ -150,6 +154,7 @@ fn apply_raw(cfg: &mut ClientConfig, raw: RawConfig) {
     if let Some(v) = raw.request_timeout_s   { cfg.request_timeout_s = v; }
     if let Some(v) = raw.smart_space         { cfg.smart_space = v; }
     if let Some(v) = raw.continuation_window_s { cfg.continuation_window_s = v; }
+    if let Some(v) = raw.max_record_s          { cfg.max_record_s = v; }
 }
 
 /// Keys that can be swapped into a running client without a restart.
@@ -164,6 +169,7 @@ pub const HOT_KEYS: &[&str] = &[
     "request_timeout_s",
     "smart_space",
     "continuation_window_s",
+    "max_record_s",
 ];
 
 /// Keys whose change requires re-registering the keyboard hook, rebuilding
@@ -207,6 +213,7 @@ pub fn diff(old: &ClientConfig, new: &ClientConfig) -> ConfigDiff {
     if old.request_timeout_s    != new.request_timeout_s    { d.hot_changed.push("request_timeout_s"); }
     if old.smart_space          != new.smart_space          { d.hot_changed.push("smart_space"); }
     if old.continuation_window_s != new.continuation_window_s { d.hot_changed.push("continuation_window_s"); }
+    if old.max_record_s    != new.max_record_s    { d.hot_changed.push("max_record_s"); }
 
     if old.trigger         != new.trigger         { d.cold_changed.push("trigger"); }
     if old.one_key_trigger != new.one_key_trigger { d.cold_changed.push("one_key_trigger"); }
@@ -260,6 +267,7 @@ mod tests {
         assert_eq!(d.request_timeout_s, 30);
         assert!(d.smart_space);
         assert_eq!(d.continuation_window_s, 30);
+        assert_eq!(d.max_record_s, 300);
         assert!(d.auth_token.is_empty());
         assert!(d.input_device.is_empty());
         assert!(d.one_key_trigger.is_empty());
@@ -281,6 +289,7 @@ mod tests {
             request_timeout_s = 60
             smart_space = false
             continuation_window_s = 10
+            max_record_s = 120
         "#;
         let raw: RawConfig = toml::from_str(toml_str).unwrap();
         let mut cfg = defaults();
@@ -297,6 +306,7 @@ mod tests {
         assert_eq!(cfg.request_timeout_s, 60);
         assert!(!cfg.smart_space);
         assert_eq!(cfg.continuation_window_s, 10);
+        assert_eq!(cfg.max_record_s, 120);
     }
 
     #[test]

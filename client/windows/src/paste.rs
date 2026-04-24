@@ -13,7 +13,7 @@ use windows::Win32::System::DataExchange::{
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
-    KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, VIRTUAL_KEY, VK_CONTROL, VK_V,
+    KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, VIRTUAL_KEY, VK_CONTROL, VK_RETURN, VK_V,
 };
 
 const CF_UNICODETEXT: u32 = 13;
@@ -107,6 +107,16 @@ pub fn inject_ctrl_v(delay_ms: u32) {
         key_input(VK_V, false),
         key_input(VK_V, true),
         key_input(VK_CONTROL, true),
+    ];
+    unsafe {
+        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+    }
+}
+
+pub fn inject_enter() {
+    let inputs = [
+        key_input(VK_RETURN, false),
+        key_input(VK_RETURN, true),
     ];
     unsafe {
         SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);

@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
 use tray_icon::{
-    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
+    menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem},
     Icon, TrayIcon, TrayIconBuilder,
 };
 
@@ -45,8 +45,8 @@ pub enum TrayState {
 impl TrayState {
     fn tint(self) -> [u8; 4] {
         match self {
-            // Neutral dot: visible on both light and dark Windows taskbars.
-            TrayState::Idle      => [180, 180, 180, 255],
+            // Green dot: matches the Linux tray idle colour.
+            TrayState::Idle      => [ 40, 180,  40, 255],
             // Red = active capture.
             TrayState::Recording => [220,  40,  40, 255],
             // Blue = network in flight.
@@ -74,6 +74,7 @@ pub mod id {
     pub const REVEAL_CONFIG: &str  = "reveal-config";
     pub const RELOAD_CONFIG: &str  = "reload-config";
     pub const SHOW_LOG: &str       = "show-log";
+    pub const TOGGLE_LOG: &str     = "toggle-log";
     pub const RESTART: &str        = "restart";
     pub const ABOUT: &str          = "about";
     pub const QUIT: &str           = "quit";
@@ -88,6 +89,7 @@ pub enum MenuAction {
     RevealConfig,
     ReloadConfig,
     ShowLog,
+    ToggleLog,
     Restart,
     About,
     Quit,
@@ -100,6 +102,7 @@ impl MenuAction {
             id::REVEAL_CONFIG  => Some(MenuAction::RevealConfig),
             id::RELOAD_CONFIG  => Some(MenuAction::ReloadConfig),
             id::SHOW_LOG       => Some(MenuAction::ShowLog),
+            id::TOGGLE_LOG     => Some(MenuAction::ToggleLog),
             id::RESTART        => Some(MenuAction::Restart),
             id::ABOUT          => Some(MenuAction::About),
             id::QUIT           => Some(MenuAction::Quit),
@@ -158,6 +161,9 @@ pub struct Tray {
     /// Retained to keep the menu alive for the lifetime of the tray; the
     /// `TrayIcon` borrows into it. Never read after construction.
     _menu: Menu,
+    /// Retained so the caller can read back the auto-toggled check state
+    /// after a `ToggleLog` menu event fires.
+    log_item: CheckMenuItem,
 }
 
 impl Tray {
@@ -166,6 +172,7 @@ impl Tray {
     pub fn new(config_path: Option<PathBuf>) -> Result<Self> {
         let menu = Menu::new();
         let has_path = config_path.is_some();
+        let log_item = CheckMenuItem::with_id(id::TOGGLE_LOG, "Logging", true, true, None);
 
         menu.append_items(&[
             &MenuItem::with_id(id::EDIT_CONFIG,   "Edit config…",          true,  None),
@@ -173,6 +180,7 @@ impl Tray {
             &MenuItem::with_id(id::RELOAD_CONFIG, "Reload now",            true,  None),
             &PredefinedMenuItem::separator(),
             &MenuItem::with_id(id::SHOW_LOG,      "Show log",              true,  None),
+            &log_item,
             &MenuItem::with_id(id::RESTART,       "Restart client",        true,  None),
             &PredefinedMenuItem::separator(),
             &MenuItem::with_id(id::ABOUT,         "About GhostScribe",     true,  None),
@@ -187,7 +195,7 @@ impl Tray {
             .build()
             .map_err(|e| anyhow!("building tray icon: {e}"))?;
 
-        Ok(Self { icon, state: TrayState::Idle, _menu: menu })
+        Ok(Self { icon, state: TrayState::Idle, _menu: menu, log_item })
     }
 
     pub fn set_state(&mut self, state: TrayState) -> Result<()> {
@@ -207,6 +215,13 @@ impl Tray {
     pub fn set_tooltip_suffix(&self, suffix: &str) {
         let tip = format!("{} — {}", self.state.tooltip(), suffix);
         let _ = self.icon.set_tooltip(Some(tip));
+    }
+
+    /// Read the check state that `muda` auto-toggled on the last click.
+    /// Call this immediately after receiving `MenuAction::ToggleLog` to sync
+    /// the application's logging flag.
+    pub fn is_logging_enabled(&self) -> bool {
+        self.log_item.is_checked()
     }
 }
 
@@ -272,6 +287,7 @@ mod tests {
             id::REVEAL_CONFIG,
             id::RELOAD_CONFIG,
             id::SHOW_LOG,
+            id::TOGGLE_LOG,
             id::RESTART,
             id::ABOUT,
             id::QUIT,
@@ -304,5 +320,11 @@ mod tests {
                 assert_ne!(tints[i], tints[j], "states {i} and {j} share a tint");
             }
         }
+    }
+
+    #[test]
+    fn idle_tint_is_green() {
+        let [r, g, b, _] = TrayState::Idle.tint();
+        assert!(g > r && g > b, "idle tint should be greenish");
     }
 }

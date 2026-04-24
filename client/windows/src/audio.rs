@@ -137,6 +137,21 @@ impl Recorder {
         Some(resampled)
     }
 
+    /// Drain the buffer accumulated since the last `begin()` or `checkpoint()`,
+    /// returning the encoded chunk while keeping the stream active. Returns
+    /// `None` when nothing has been captured yet. Used by the auto-chunk timer
+    /// to upload partial audio mid-recording without stopping capture.
+    pub fn checkpoint(&self) -> Option<Vec<i16>> {
+        let mut g = self.shared.lock().unwrap();
+        if !g.active || g.buffer.is_empty() {
+            return None;
+        }
+        let raw = std::mem::take(&mut g.buffer);
+        let mono = downmix(&raw, g.src_channels);
+        let resampled = resample_linear(&mono, g.src_sample_rate, TARGET_SAMPLE_RATE);
+        Some(resampled)
+    }
+
     /// Discard the in-progress take without running downmix/resample or
     /// returning samples. Used when a one-key recording is cancelled by a
     /// foreign keystroke.

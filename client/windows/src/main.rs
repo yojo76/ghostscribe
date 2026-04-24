@@ -14,6 +14,7 @@ use std::fs;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::Arc;
 use std::thread;
@@ -35,6 +36,81 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Env var set on the detached child so we don't double-detach in a loop.
 const ENV_DETACHED: &str = "GHOSTSCRIBE_DETACHED";
+
+/// Auto-chunk interval: upload a partial transcript every 2 minutes while
+/// recording continues.
+const CHUNK_INTERVAL_S: u64 = 2 * 60;
+
+/// Controls whether operational log lines are written. Toggled via the tray
+/// "Logging" checkbox; defaults to on.
+static LOGGING_ENABLED: AtomicBool = AtomicBool::new(true);
+
+macro_rules! logln {
+    ($($arg:tt)*) => {
+        if LOGGING_ENABLED.load(Ordering::Relaxed) {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
+// ── "do it now" ──────────────────────────────────────────────────────────────
+
+fn is_do_it_now(text: &str) -> bool {
+    let lower = text.trim().to_lowercase();
+    let bare = lower.trim_end_matches(|c: char| !c.is_alphanumeric());
+    bare.split_whitespace().collect::<Vec<_>>() == ["do", "it", "now"]
+}
+
+// ── Chunk timer ───────────────────────────────────────────────────────────────
+
+/// Fires a callback every `CHUNK_INTERVAL_S` seconds until stopped.
+struct ChunkTimer {
+    stop_tx: std::sync::mpsc::Sender<()>,
+}
+
+impl ChunkTimer {
+    fn start(callback: impl Fn() + Send + 'static) -> Self {
+        let (stop_tx, stop_rx) = channel::<()>();
+        thread::spawn(move || loop {
+            match stop_rx.recv_timeout(Duration::from_secs(CHUNK_INTERVAL_S)) {
+                Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => callback(),
+            }
+        });
+        ChunkTimer { stop_tx }
+    }
+
+    fn stop(self) {
+        let _ = self.stop_tx.send(());
+    }
+}
+
+// ── Max-duration timer ────────────────────────────────────────────────────────
+
+/// Fires a callback once after `duration` unless cancelled first.
+struct MaxDurationTimer {
+    stop_tx: std::sync::mpsc::Sender<()>,
+}
+
+impl MaxDurationTimer {
+    fn start(duration: Duration, callback: impl Fn() + Send + 'static) -> Self {
+        let (stop_tx, stop_rx) = channel::<()>();
+        thread::spawn(move || {
+            if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                stop_rx.recv_timeout(duration)
+            {
+                callback();
+            }
+        });
+        MaxDurationTimer { stop_tx }
+    }
+
+    fn cancel(self) {
+        let _ = self.stop_tx.send(());
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Default, Clone)]
 struct Args {
@@ -171,19 +247,19 @@ fn main() -> Result<()> {
 // -----------------------------------------------------------------------------
 
 fn print_banner(cfg: &ClientConfig, mode: &str) {
-    eprintln!("GhostScribe client ({mode}) -> {}", cfg.url());
+    logln!("GhostScribe client ({mode}) -> {}", cfg.url());
     match &cfg.source_path {
-        Some(p) => eprintln!("config:   {}", p.display()),
-        None => eprintln!("config:   (defaults, no config file found)"),
+        Some(p) => logln!("config:   {}", p.display()),
+        None => logln!("config:   (defaults, no config file found)"),
     }
-    eprintln!("trigger:  {}", cfg.trigger);
-    eprintln!(
+    logln!("trigger:  {}", cfg.trigger);
+    logln!(
         "one_key:  {}",
         if cfg.one_key_trigger.is_empty() { "off" } else { cfg.one_key_trigger.as_str() }
     );
-    eprintln!("format:   {}", cfg.audio_format);
-    eprintln!("auth:     {}", if cfg.has_auth() { "on" } else { "off" });
-    eprintln!(
+    logln!("format:   {}", cfg.audio_format);
+    logln!("auth:     {}", if cfg.has_auth() { "on" } else { "off" });
+    logln!(
         "paste:    {} (delay {} ms)",
         if cfg.auto_paste { "on" } else { "off" },
         cfg.paste_delay_ms
@@ -200,7 +276,7 @@ fn run_headless(cfg: ClientConfig) -> Result<()> {
     let last_paste: Arc<std::sync::Mutex<Option<std::time::Instant>>> =
         Arc::new(std::sync::Mutex::new(None));
 
-    eprintln!(
+    logln!(
         "Hold {} and speak. Release to transcribe. Ctrl+C to quit.",
         cfg.trigger
     );
@@ -217,17 +293,17 @@ fn run_headless(cfg: ClientConfig) -> Result<()> {
         match event {
             HotkeyEvent::Press => {
                 recorder.begin();
-                eprintln!("[rec] ...");
+                logln!("[rec] ...");
             }
             HotkeyEvent::Cancel => {
                 recorder.cancel();
-                eprintln!("[rec] cancelled");
+                logln!("[rec] cancelled");
             }
             HotkeyEvent::Release => match recorder.end() {
-                None => eprintln!("[rec] stopped, no audio captured"),
+                None => logln!("[rec] stopped, no audio captured"),
                 Some(samples) => {
                     let raw_kb = samples.len() * 2 / 1024;
-                    eprintln!("[rec] stopped, {raw_kb} kB raw");
+                    logln!("[rec] stopped, {raw_kb} kB raw");
                     spawn_upload_headless(&cfg, samples, last_paste.clone());
                 }
             },
@@ -245,7 +321,7 @@ fn spawn_upload_headless(
     let cfg = cfg.clone();
     thread::spawn(move || {
         if let Err(e) = do_upload_and_paste(&cfg, samples, &last_paste) {
-            eprintln!("[send] {e}");
+            logln!("[send] {e}");
         }
     });
 }
@@ -262,22 +338,28 @@ fn do_upload_and_paste(
 ) -> Result<String> {
     let (encoded, filename, mime) = audio::encode(&samples, &cfg.audio_format)
         .map_err(|e| anyhow!("encoding failed: {e}"))?;
-    eprintln!("[send] {} kB {}", encoded.len() / 1024, cfg.audio_format);
+    logln!("[send] {} kB {}", encoded.len() / 1024, cfg.audio_format);
 
     let t = upload::submit(cfg, &encoded, filename, mime)?;
     let kb = t.bytes_sent / 1024;
-    eprintln!(
+    logln!(
         "[recv] {} kB in {} ms (lang={} p={:.2})",
         kb, t.elapsed_ms, t.language, t.language_probability
     );
     if t.text.is_empty() {
-        eprintln!("[recv] empty transcript");
+        logln!("[recv] empty transcript");
         return Ok(String::new());
     }
-    eprintln!("[recv] transcript:");
+    logln!("[recv] transcript:");
     println!("{}", t.text);
 
     if cfg.auto_paste {
+        if is_do_it_now(&t.text) {
+            logln!("[do-it-now] Enter");
+            paste::inject_enter();
+            return Ok(t.text);
+        }
+
         let mut lp = last_paste.lock().unwrap();
         let needs_space = cfg.smart_space
             && lp.map_or(false, |t| {
@@ -291,7 +373,7 @@ fn do_upload_and_paste(
         };
         let saved = paste::get_clipboard();
         match paste::set_clipboard(&paste_text) {
-            Err(e) => eprintln!("[paste] clipboard write failed: {e}"),
+            Err(e) => logln!("[paste] clipboard write failed: {e}"),
             Ok(()) => {
                 paste::inject_ctrl_v(cfg.paste_delay_ms);
                 *lp = Some(std::time::Instant::now());
@@ -299,7 +381,7 @@ fn do_upload_and_paste(
                 if let Some(prev) = saved {
                     let _ = paste::set_clipboard(&prev);
                 }
-                eprintln!("[paste] done");
+                logln!("[paste] done");
             }
         }
     }
@@ -322,6 +404,12 @@ enum UserEvent {
     Watcher(WatcherEvent),
     UploadOk(String),
     UploadErr(String),
+    /// A periodic chunk upload completed while recording continued.
+    ChunkUploadOk(String),
+    /// Auto-chunk timer fired: checkpoint and upload partial audio.
+    ChunkFired,
+    /// Max-duration timer fired: force-stop the recording.
+    MaxDurationFired,
 }
 
 fn run_tray(initial: ClientConfig, args: Args) -> Result<()> {
@@ -382,13 +470,16 @@ fn run_tray(initial: ClientConfig, args: Args) -> Result<()> {
 
     let recorder = Recorder::start(&initial.input_device)?;
     let mut tray = Tray::new(initial.source_path.clone())?;
-    // Track pending cold-key changes so "Restart" can surface them.
     let mut pending_restart: Vec<&'static str> = Vec::new();
     let recorder_opt = Some(recorder);
     let cfg_path_for_menu = initial.source_path.clone();
     let args_for_restart = args.clone();
     let last_paste: Arc<std::sync::Mutex<Option<std::time::Instant>>> =
         Arc::new(std::sync::Mutex::new(None));
+
+    let mut is_recording = false;
+    let mut chunk_timer: Option<ChunkTimer> = None;
+    let mut max_timer: Option<MaxDurationTimer> = None;
 
     event_loop.run(move |event, _target, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -397,16 +488,40 @@ fn run_tray(initial: ClientConfig, args: Args) -> Result<()> {
             Event::UserEvent(UserEvent::Hotkey(HotkeyEvent::Press)) => {
                 if let Some(r) = recorder_opt.as_ref() {
                     r.begin();
+                    is_recording = true;
                     let _ = tray.set_state(TrayState::Recording);
+
+                    // Auto-chunk timer.
+                    let p = proxy.clone();
+                    chunk_timer = Some(ChunkTimer::start(move || {
+                        let _ = p.send_event(UserEvent::ChunkFired);
+                    }));
+
+                    // Max-duration timer (0 = disabled).
+                    let cfg_snap = cfg_store.load_full();
+                    if cfg_snap.max_record_s > 0 {
+                        let p = proxy.clone();
+                        let dur = Duration::from_secs(cfg_snap.max_record_s as u64);
+                        max_timer = Some(MaxDurationTimer::start(dur, move || {
+                            let _ = p.send_event(UserEvent::MaxDurationFired);
+                        }));
+                    }
                 }
             }
             Event::UserEvent(UserEvent::Hotkey(HotkeyEvent::Cancel)) => {
+                if let Some(t) = chunk_timer.take() { t.stop(); }
+                if let Some(t) = max_timer.take() { t.cancel(); }
                 if let Some(r) = recorder_opt.as_ref() {
                     r.cancel();
                 }
+                is_recording = false;
                 let _ = tray.set_state(TrayState::Idle);
             }
-            Event::UserEvent(UserEvent::Hotkey(HotkeyEvent::Release)) => {
+            Event::UserEvent(UserEvent::Hotkey(HotkeyEvent::Release))
+            | Event::UserEvent(UserEvent::MaxDurationFired) => {
+                if let Some(t) = chunk_timer.take() { t.stop(); }
+                if let Some(t) = max_timer.take() { t.cancel(); }
+                is_recording = false;
                 let samples = recorder_opt.as_ref().and_then(|r| r.end());
                 match samples {
                     None => {
@@ -426,14 +541,35 @@ fn run_tray(initial: ClientConfig, args: Args) -> Result<()> {
                     }
                 }
             }
+            Event::UserEvent(UserEvent::ChunkFired) => {
+                if let Some(samples) = recorder_opt.as_ref().and_then(|r| r.checkpoint()) {
+                    let cfg_snap = cfg_store.load_full();
+                    let proxy = proxy.clone();
+                    let lp = last_paste.clone();
+                    thread::spawn(move || {
+                        match do_upload_and_paste(&cfg_snap, samples, &lp) {
+                            Ok(text)  => { let _ = proxy.send_event(UserEvent::ChunkUploadOk(text)); }
+                            Err(e)    => { let _ = proxy.send_event(UserEvent::UploadErr(format!("{e:#}"))); }
+                        }
+                    });
+                }
+            }
             Event::UserEvent(UserEvent::UploadOk(text)) => {
                 let _ = tray.set_state(TrayState::Idle);
                 if !text.is_empty() {
                     tray.set_tooltip_suffix(&format!("last: {} chars", text.chars().count()));
                 }
             }
+            Event::UserEvent(UserEvent::ChunkUploadOk(text)) => {
+                // Restore recording state if still active, idle otherwise.
+                let next = if is_recording { TrayState::Recording } else { TrayState::Idle };
+                let _ = tray.set_state(next);
+                if !text.is_empty() {
+                    tray.set_tooltip_suffix(&format!("chunk: {} chars", text.chars().count()));
+                }
+            }
             Event::UserEvent(UserEvent::UploadErr(msg)) => {
-                eprintln!("[send] {msg}");
+                logln!("[send] {msg}");
                 let _ = tray.set_state(TrayState::Error);
                 tray.set_tooltip_suffix(&truncate(&msg, 80));
             }
@@ -474,22 +610,19 @@ fn handle_watcher_event(
 ) {
     match ev {
         WatcherEvent::Reloaded { new_config, diff } => {
-            // Apply hot swap so future uploads see the new values.
             cfg_store.store(Arc::new(*new_config));
             if !diff.hot_changed.is_empty() {
                 let msg = format!("reloaded: {}", diff.hot_changed.join(", "));
-                eprintln!("[config] {msg}");
+                logln!("[config] {msg}");
                 tray.set_tooltip_suffix(&msg);
             }
             if !diff.cold_changed.is_empty() {
-                // Record the cold-key drift so "Restart" knows there is
-                // work to do, and surface a non-blocking hint in the icon.
                 for k in &diff.cold_changed {
                     if !pending_restart.contains(k) {
                         pending_restart.push(*k);
                     }
                 }
-                eprintln!("[config] restart required: {}", pending_restart.join(", "));
+                logln!("[config] restart required: {}", pending_restart.join(", "));
                 let _ = tray.set_state(TrayState::Error);
                 tray.set_tooltip_suffix(&format!(
                     "restart required: {}",
@@ -498,13 +631,13 @@ fn handle_watcher_event(
             }
         }
         WatcherEvent::ParseError { message } => {
-            eprintln!("[config] parse error: {message}");
+            logln!("[config] parse error: {message}");
             let _ = tray.set_state(TrayState::Error);
             tray.set_tooltip_suffix("config parse error — see dialog");
             tray::show_error_box("GhostScribe — config parse error", &message);
         }
         WatcherEvent::Missing => {
-            eprintln!("[config] source file disappeared");
+            logln!("[config] source file disappeared");
             tray.set_tooltip_suffix("config file missing");
         }
     }
@@ -572,6 +705,11 @@ fn handle_menu_action(
             if let Ok(p) = log_file_path() {
                 shell_open(&p);
             }
+            false
+        }
+        MenuAction::ToggleLog => {
+            // muda auto-toggles the check state on click; sync our flag.
+            LOGGING_ENABLED.store(tray.is_logging_enabled(), Ordering::Relaxed);
             false
         }
         MenuAction::Restart => {
