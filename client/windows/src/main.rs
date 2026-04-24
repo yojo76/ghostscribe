@@ -394,7 +394,7 @@ fn do_upload_and_paste(
 // -----------------------------------------------------------------------------
 
 use ghostscribe_client::tray::{self, MenuAction, Tray, TrayState};
-use tao::event::Event;
+use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 
 #[derive(Debug)]
@@ -469,7 +469,7 @@ fn run_tray(initial: ClientConfig, args: Args) -> Result<()> {
     }
 
     let recorder = Recorder::start(&initial.input_device)?;
-    let mut tray = Tray::new(initial.source_path.clone())?;
+    let mut tray: Option<Tray> = None;
     let mut pending_restart: Vec<&'static str> = Vec::new();
     let recorder_opt = Some(recorder);
     let cfg_path_for_menu = initial.source_path.clone();
@@ -483,6 +483,17 @@ fn run_tray(initial: ClientConfig, args: Args) -> Result<()> {
 
     event_loop.run(move |event, _target, control_flow| {
         *control_flow = ControlFlow::Wait;
+
+        // Create the tray icon once the Win32 event loop is running.
+        if let Event::NewEvents(StartCause::Init) = event {
+            tray = Some(
+                Tray::new(cfg_path_for_menu.clone())
+                    .expect("tray icon init failed"),
+            );
+            return;
+        }
+
+        let Some(mut tray) = tray.as_mut() else { return };
 
         match event {
             Event::UserEvent(UserEvent::Hotkey(HotkeyEvent::Press)) => {

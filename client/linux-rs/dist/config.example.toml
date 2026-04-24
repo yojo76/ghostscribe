@@ -1,0 +1,61 @@
+# GhostScribe Linux client configuration.
+# Copy this to config.toml next to ghostscribe-client (or to
+# ~/.config/ghostscribe/config.toml) and edit.
+
+# URL of the GhostScribe server (no trailing slash).
+server_url = "http://localhost:5005"
+
+# Which endpoint to POST to. One of:
+#   /v1/auto  - autodetect language, transcribe
+#   /v1/en    - force English transcription
+endpoint = "/v1/auto"
+
+# Optional. If the server has GHOSTSCRIBE_AUTH_TOKEN set, put the same
+# value here; it is sent as the X-Auth-Token header.
+auth_token = ""
+
+# Optional. Audio input device name (substring match, case-insensitive).
+# Leave empty to use the system default mic.
+input_device = ""
+
+# Audio encoding format sent to the server. "flac" is smaller (~half of WAV).
+# Use "wav" if you encounter compatibility issues.
+audio_format = "flac"
+
+# Push-to-talk trigger. Format: key:[modifier+]<keyname>
+# Modifiers: ctrl, alt, shift (one or more, joined with +)
+# Key names: a-z, 0-9, f1-f12, space, enter, tab, escape, backspace,
+#            insert, delete, home, end, pageup, pagedown, left, right, up, down
+# Examples:  key:ctrl+g   key:ctrl+alt+r   key:f11
+trigger = "key:ctrl+g"
+
+# Optional single-key push-to-talk. Coexists with `trigger`:
+#   - Press this key alone -> start recording; release -> send.
+#   - If another key is pressed mid-recording, the take is cancelled
+#     and locked out until this key is released. Keys that are part of
+#     `trigger` (e.g. the main chord key) are treated as neutral and do
+#     not cancel.
+#   - If `trigger` is fully satisfied first (all chord keys held), the
+#     chord path wins; one-key does not fire until the chord releases.
+# Allowed values: key:ctrl, key:alt, key:f1 .. key:f12. Empty = disabled.
+# Letters, digits, and shift are intentionally rejected (would hijack typing).
+one_key_trigger = ""
+
+# Automatically paste the transcript into the focused window via Ctrl+V.
+# The previous clipboard contents are saved and restored afterwards.
+auto_paste = true
+
+# Milliseconds to wait before injecting Ctrl+V (give the window focus time).
+paste_delay_ms = 50
+
+# HTTP POST timeout in seconds.
+request_timeout_s = 30
+
+# Prepend a space when the transcript follows recent dictation (smart spacing).
+smart_space = true
+
+# Seconds after the last paste that still counts as "continuing" dictation.
+continuation_window_s = 30
+
+# Auto-stop recording after this many seconds (0 = no limit).
+max_record_s = 300

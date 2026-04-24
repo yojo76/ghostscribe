@@ -220,6 +220,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn url_adds_separator_when_endpoint_unslashed() {
+        let cfg = ClientConfig {
+            server_url: "http://h:5005".into(),
+            endpoint: "v1/en".into(),
+            ..defaults()
+        };
+        assert_eq!(cfg.url(), "http://h:5005/v1/en");
+    }
+
+    #[test]
+    fn has_auth_toggles_on_non_empty_token() {
+        let mut cfg = defaults();
+        assert!(!cfg.has_auth());
+        cfg.auth_token = "s3cret".into();
+        assert!(cfg.has_auth());
+    }
+
+    #[test]
     fn url_trims_trailing_server_slash() {
         let cfg = ClientConfig {
             server_url: "http://h:5005/".into(),
@@ -246,6 +264,41 @@ mod tests {
         assert!(d.input_device.is_empty());
         assert!(d.one_key_trigger.is_empty());
         assert!(d.source_path.is_none());
+    }
+
+    #[test]
+    fn raw_toml_round_trips_into_clientconfig() {
+        let toml_str = r#"
+            server_url = "http://example.internal:5005"
+            endpoint   = "/v1/en"
+            trigger    = "key:ctrl+shift+g"
+            one_key_trigger = "key:alt"
+            auth_token = "s3cret"
+            input_device = "USB Audio"
+            audio_format = "wav"
+            auto_paste   = false
+            paste_delay_ms = 120
+            request_timeout_s = 60
+            smart_space = false
+            continuation_window_s = 10
+            max_record_s = 120
+        "#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        let mut cfg = defaults();
+        apply_raw(&mut cfg, raw);
+        assert_eq!(cfg.server_url, "http://example.internal:5005");
+        assert_eq!(cfg.endpoint, "/v1/en");
+        assert_eq!(cfg.trigger, "key:ctrl+shift+g");
+        assert_eq!(cfg.one_key_trigger, "key:alt");
+        assert_eq!(cfg.auth_token, "s3cret");
+        assert_eq!(cfg.input_device, "USB Audio");
+        assert_eq!(cfg.audio_format, "wav");
+        assert!(!cfg.auto_paste);
+        assert_eq!(cfg.paste_delay_ms, 120);
+        assert_eq!(cfg.request_timeout_s, 60);
+        assert!(!cfg.smart_space);
+        assert_eq!(cfg.continuation_window_s, 10);
+        assert_eq!(cfg.max_record_s, 120);
     }
 
     #[test]

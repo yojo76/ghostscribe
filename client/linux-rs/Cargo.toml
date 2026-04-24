@@ -27,8 +27,12 @@ rdev    = "0.5"
 # Clipboard: X11/Wayland backed, maintains selection in a background thread
 arboard = "3"
 
-# System tray + event loop (supports Linux via libappindicator3)
-tray-icon = "0.19"
+# System tray + event loop.
+# On Linux, tray-icon links against whichever appindicator variant pkg-config
+# finds (libappindicator3 or libayatana-appindicator3). No Cargo feature needed.
+# default-features = false drops the libxdo dep (menu keyboard shortcuts)
+# which we don't use — we drive key injection ourselves via rdev.
+tray-icon = { version = "0.19", default-features = false }
 tao       = "0.30"
 
 [profile.release]
