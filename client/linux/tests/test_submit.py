@@ -76,6 +76,9 @@ def neutralize_io(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(gsclient, "read_clipboard", lambda: None)
     monkeypatch.setattr(gsclient, "copy_to_clipboard", lambda _text: True)
     monkeypatch.setattr(gsclient.time, "sleep", lambda _s: None)
+    # Reset the module-level paste timestamp so smart_space never triggers
+    # based on state left by a previous test in the same session.
+    monkeypatch.setattr(gsclient, "_last_paste_time", 0.0)
 
 
 def test_submit_no_audio_is_noop(
@@ -227,6 +230,75 @@ def test_submit_non_json_response_handled(
     gsclient.submit(base_cfg, http, sample_audio)  # type: ignore[arg-type]
     assert copied == []
     assert "non-JSON" in capsys.readouterr().err
+
+
+def test_detect_terminal_called_before_clipboard_write(
+    base_cfg: ClientConfig,
+    sample_audio: np.ndarray,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """detect_terminal_focus() must run before copy_to_clipboard() so that the
+    xdotool/xprop subprocess overhead does not sit between the clipboard write
+    and the Ctrl+V injection (which would shrink the window for the target app
+    to read the clipboard before it is restored).
+    """
+    call_order: list[str] = []
+
+    monkeypatch.setattr(
+        gsclient,
+        "detect_terminal_focus",
+        lambda: (call_order.append("detect"), (False, "Code"))[1],
+    )
+    monkeypatch.setattr(
+        gsclient,
+        "copy_to_clipboard",
+        lambda text: (call_order.append(f"copy:{text}"), True)[1],
+    )
+
+    http = _FakeHttpxClient(
+        _FakeResponse(
+            json_body={"text": "hello", "language": "en", "language_probability": 0.9}
+        )
+    )
+    gsclient.submit(base_cfg, http, sample_audio)  # type: ignore[arg-type]
+
+    assert "detect" in call_order
+    first_copy_idx = next(i for i, c in enumerate(call_order) if c.startswith("copy:"))
+    detect_idx = call_order.index("detect")
+    assert detect_idx < first_copy_idx, (
+        f"detect_terminal_focus() (index {detect_idx}) must run before "
+        f"copy_to_clipboard() (index {first_copy_idx}); order was: {call_order}"
+    )
+
+
+def test_restore_delay_at_least_150ms(
+    base_cfg: ClientConfig,
+    sample_audio: np.ndarray,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sleep between Ctrl+V injection and clipboard restore must be at least
+    150 ms so the target window has time to issue its SelectionRequest before the
+    transcript is replaced with the saved value.  base_cfg.paste_delay_ms = 10
+    (< 150), so the floor must be enforced.
+    """
+    sleep_calls: list[float] = []
+
+    monkeypatch.setattr(gsclient.time, "sleep", lambda s: sleep_calls.append(s))
+
+    http = _FakeHttpxClient(
+        _FakeResponse(
+            json_body={"text": "hello", "language": "en", "language_probability": 0.9}
+        )
+    )
+    gsclient.submit(base_cfg, http, sample_audio)  # type: ignore[arg-type]
+
+    assert sleep_calls, "expected at least one time.sleep() call in the paste path"
+    # The last sleep is the post-inject restore delay.
+    post_inject_delay = sleep_calls[-1]
+    assert post_inject_delay >= 0.150, (
+        f"restore delay {post_inject_delay * 1000:.0f} ms is too short; "
+        "must be ≥ 150 ms to avoid racing ahead of the target window's clipboard read"
+    )
 
 
 def test_submit_auto_paste_off_does_not_touch_clipboard(

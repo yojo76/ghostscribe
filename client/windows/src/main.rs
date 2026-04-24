@@ -377,7 +377,12 @@ fn do_upload_and_paste(
             Ok(()) => {
                 paste::inject_ctrl_v(cfg.paste_delay_ms);
                 *lp = Some(std::time::Instant::now());
-                thread::sleep(Duration::from_millis(cfg.paste_delay_ms as u64));
+                // Wait for the target window to read the clipboard before
+                // restoring the saved value. paste_delay_ms (default 50 ms)
+                // is too short under load; enforce a 150 ms floor. The delay
+                // is invisible — the pasted text has already appeared.
+                let restore_ms = cfg.paste_delay_ms.max(150);
+                thread::sleep(Duration::from_millis(restore_ms as u64));
                 if let Some(prev) = saved {
                     let _ = paste::set_clipboard(&prev);
                 }

@@ -646,18 +646,32 @@ def submit(
             and paste_text and not paste_text[0].isspace()
         ):
             paste_text = " " + paste_text
+
+        # Detect the focused window BEFORE touching the clipboard.
+        # detect_terminal_focus() spawns two subprocesses (xdotool + xprop,
+        # ~30–100 ms total). Calling them after copy_to_clipboard() adds that
+        # latency between the clipboard write and the Ctrl+V injection, which
+        # shrinks the window in which the target app can read the transcript
+        # before the clipboard is restored with the saved value.
+        use_shift, win_cls = detect_terminal_focus()
+        combo_used = "ctrl+shift+v" if use_shift else "ctrl+v"
+        _eprint(f"[paste] window={win_cls!r} -> {combo_used}")
+
         saved = read_clipboard()
         # Trailing space so back-to-back takes don't concatenate in the
         # target field. Only applied to the pasted copy — not to _eprint().
         if copy_to_clipboard(paste_text + " "):
-            use_shift, win_cls = detect_terminal_focus()
-            combo_used = "ctrl+shift+v" if use_shift else "ctrl+v"
-            _eprint(f"[paste] window={win_cls!r} -> {combo_used}")
             try:
                 inject_paste(cfg.paste_delay_ms, use_shift=use_shift)
                 pasted = True
                 _last_paste_time = time.monotonic()
-                time.sleep(cfg.paste_delay_ms / 1000.0)
+                # Wait for the target window to issue its SelectionRequest
+                # (i.e. actually read the clipboard after processing Ctrl+V).
+                # paste_delay_ms (default 50 ms) is too short under load;
+                # enforce a floor of 150 ms. The delay is invisible to the
+                # user because the pasted text has already appeared.
+                restore_delay_s = max(cfg.paste_delay_ms, 150) / 1000.0
+                time.sleep(restore_delay_s)
                 if saved is not None:
                     copy_to_clipboard(saved)
                     _eprint("[paste] clipboard restored")

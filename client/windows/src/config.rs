@@ -64,7 +64,11 @@ pub const DEFAULT_CONFIG_TOML: &str = r#"# GhostScribe Windows client config
 # endpoint             = "/v1/auto"
 # auth_token           = ""
 # input_device         = ""                 # substring match against device name
-# trigger              = "key:ctrl+g"       # push-to-talk chord
+# trigger              = "key:ctrl+g"       # push-to-talk chord or mouse button
+#                                            # keyboard: key:[mod+…+]<key>   e.g. key:ctrl+shift+g
+#                                            # modifiers: ctrl, shift, alt, super (win key)
+#                                            # mouse:    mouse:<button>       e.g. mouse:x2
+#                                            # buttons:  left, right, middle, x1 (back), x2 (fwd)
 # one_key_trigger      = ""                 # optional single-key PTT, e.g. key:f11
 # audio_format         = "flac"             # "flac" or "wav"
 # auto_paste           = true

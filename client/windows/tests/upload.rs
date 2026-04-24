@@ -20,6 +20,10 @@ fn cfg_for(server_url: String, endpoint: &str, token: &str) -> ClientConfig {
         audio_format: "wav".to_string(),
         auto_paste: true,
         paste_delay_ms: 50,
+        request_timeout_s: 30,
+        smart_space: true,
+        continuation_window_s: 30,
+        max_record_s: 300,
         source_path: None,
     }
 }

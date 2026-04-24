@@ -41,7 +41,8 @@ endpoint        = "/v1/auto"       # /v1/auto | /v1/en
 auth_token      = ""               # same value as the Linux client
 input_device    = ""               # empty = Windows default mic
 audio_format    = "flac"           # "flac" (smaller) or "wav"
-trigger         = "key:ctrl+g"     # key:[modifier+]<keyname>
+trigger         = "key:ctrl+g"     # key:[modifier+]<keyname>  OR  mouse:<button>
+                                   # mouse buttons: left, right, middle, x1 (back), x2 (forward)
 one_key_trigger = ""               # empty, or key:ctrl|alt|f1..f24
 auto_paste      = true             # false => stdout only
 paste_delay_ms  = 50               # ms before Ctrl+V and before restore
@@ -57,7 +58,7 @@ above.
 | `auth_token`     | empty               | Sent as `X-Auth-Token` when non-empty. **Do not commit your real token.**               |
 | `input_device`   | empty               | Case-insensitive substring of the mic's Windows name. Empty = system default.           |
 | `audio_format`   | `flac`              | `flac` halves payload vs raw WAV. Use `wav` only if FLAC gives the server trouble.      |
-| `trigger`        | `key:ctrl+g`        | Modifiers: `ctrl`, `shift`, `alt`. Keys: `a`-`z`, `0`-`9`, `f1`-`f24`, `pause`, etc.    |
+| `trigger`        | `key:ctrl+g`        | Keyboard: `key:[mod+…+]<key>`. Multiple modifiers: `key:ctrl+shift+g`. Modifiers: `ctrl`, `shift`, `alt`, `super`/`win` (Windows key). Keys: `a`–`z`, `0`–`9`, `f1`–`f24`, `space`, `delete`, etc. Mouse: `mouse:<button>` — `left`, `right`, `middle`, `x1` (back), `x2` (forward). |
 | `one_key_trigger`| empty               | Optional single-key PTT. Allowed: `key:ctrl`, `key:alt`, `key:f1`-`key:f24`. Pressing a foreign key mid-record cancels the take; keys from `trigger` are neutral. See note below. |
 | `auto_paste`     | `true`              | If `true`: save clipboard -> set transcript -> `Ctrl+V` -> restore clipboard.            |
 | `paste_delay_ms` | `50`                | Applied both before injecting `Ctrl+V` and before restoring the clipboard.              |
@@ -155,9 +156,10 @@ second. When the file's `mtime` advances, the new contents are parsed
 and diffed against the running config:
 
 - **Hot keys** (`server_url`, `endpoint`, `auth_token`, `auto_paste`,
-  `paste_delay_ms`) are swapped in atomically under an `ArcSwap`. The
-  next upload/paste sees the new value. Tooltip updates to `reloaded:
-  server_url, auto_paste`.
+  `paste_delay_ms`, `request_timeout_s`, `smart_space`,
+  `continuation_window_s`, `max_record_s`) are swapped in atomically
+  under an `ArcSwap`. The next upload/paste sees the new value.
+  Tooltip updates to `reloaded: server_url, auto_paste`.
 - **Cold keys** (`trigger`, `one_key_trigger`, `input_device`,
   `audio_format`) cannot be changed mid-session because the audio stream
   and the low-level keyboard hook capture them at startup. The icon
@@ -166,6 +168,18 @@ and diffed against the running config:
 - **Parse errors** (malformed TOML, invalid keys, etc.) pop a modal
   message box with the diagnostic. The running config is untouched,
   so the client keeps working with the previous values.
+
+**Automatic recording limits (tray mode only).**
+While recording, two background timers run:
+
+- **Auto-chunk** – every 2 minutes, the current buffer is checkpointed
+  and a partial upload is sent so long transcripts reach the server
+  incrementally.
+- **`max_record_s`** (default 300 s) – if the trigger is still held
+  after this many seconds, recording is force-stopped and the buffer
+  is uploaded. Set to `0` to disable.
+
+Both timers are inactive in headless (`--detach`) mode.
 
 **What `--tray` does not do:**
 
@@ -237,8 +251,8 @@ Same UIPI caveat as any Windows input hook:
 
 **Implemented:**
 
-- Configurable chord trigger (`trigger`) via `SetWindowsHookExW` /
-  `WH_KEYBOARD_LL`, unprivileged.
+- Configurable trigger (`trigger`) via `WH_KEYBOARD_LL` (keyboard chord)
+  or `WH_MOUSE_LL` (mouse button), both unprivileged.
 - Optional single-key PTT (`one_key_trigger`): press alone to record,
   release to send; foreign key mid-take cancels the recording.
 - Microphone capture via `cpal` (WASAPI under the hood), any source
@@ -264,7 +278,6 @@ Same UIPI caveat as any Windows input hook:
 - No clipboard-change verification before restore (if you copy
   something between the paste and the restore, the restore will
   clobber it).
-- No recording time cap (holding the hotkey forever grows a buffer).
 
 Transcripts always go to **stdout** regardless of `auto_paste`, so you
 can pipe them wherever you like even when the paste is on.
@@ -279,7 +292,7 @@ can pipe them wherever you like even when the paste is on.
 | `src/main.rs`          | Entry point; spawns hook thread + upload workers. |
 | `src/config.rs`        | TOML config loader (exe-dir, `%APPDATA%`, CWD).  |
 | `src/audio.rs`         | `cpal` capture, downmix, resample, FLAC/WAV encode. |
-| `src/hotkey.rs`        | `WH_KEYBOARD_LL` hook; chord + one-key state machine. |
+| `src/hotkey.rs`        | `WH_KEYBOARD_LL` + `WH_MOUSE_LL` hooks; chord, one-key, and mouse-button PTT. |
 | `src/upload.rs`        | Multipart `ureq` POST with `X-Auth-Token`.       |
 | `src/paste.rs`         | Save-Paste-Restore via Win32 clipboard + `SendInput`. |
 | `src/tray.rs`          | `--tray` icon, procedural state-tinted glyphs, menu wiring. |
