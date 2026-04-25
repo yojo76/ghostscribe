@@ -35,6 +35,12 @@ arboard = "3"
 tray-icon = { version = "0.19", default-features = false }
 tao       = "0.30"
 
+[patch.crates-io]
+# Patches tray-icon 0.19.3: AppIndicator set_icon_full() expects the icon stem,
+# not a full path — the upstream crate passes the full path, which silently
+# produces a blank tray icon on all GTK/AppIndicator desktops.
+tray-icon = { path = "vendor/tray-icon" }
+
 [profile.release]
 opt-level = "z"
 lto       = true
