@@ -45,7 +45,7 @@ trigger         = "key:ctrl+g"     # key:[modifier+]<keyname>  OR  mouse:<button
                                    # mouse buttons: left, right, middle, x1 (back), x2 (forward)
 one_key_trigger = ""               # empty, or key:ctrl|alt|f1..f24
 auto_paste      = true             # false => stdout only
-paste_delay_ms  = 50               # ms before Ctrl+V and before restore
+paste_delay_ms  = 50               # ms to wait before Ctrl+V; restore uses max(this, 150 ms)
 ```
 
 All fields are optional; anything you omit falls back to the defaults
@@ -61,7 +61,7 @@ above.
 | `trigger`        | `key:ctrl+g`        | Keyboard: `key:[mod+…+]<key>`. Multiple modifiers: `key:ctrl+shift+g`. Modifiers: `ctrl`, `shift`, `alt`, `super`/`win` (Windows key). Keys: `a`–`z`, `0`–`9`, `f1`–`f24`, `space`, `delete`, etc. Mouse: `mouse:<button>` — `left`, `right`, `middle`, `x1` (back), `x2` (forward). |
 | `one_key_trigger`| empty               | Optional single-key PTT. Allowed: `key:ctrl`, `key:alt`, `key:f1`-`key:f24`. Pressing a foreign key mid-record cancels the take; keys from `trigger` are neutral. See note below. |
 | `auto_paste`     | `true`              | If `true`: save clipboard -> set transcript -> `Ctrl+V` -> restore clipboard.            |
-| `paste_delay_ms` | `50`                | Applied both before injecting `Ctrl+V` and before restoring the clipboard.              |
+| `paste_delay_ms` | `50`                | Sleep before injecting `Ctrl+V`. Clipboard restore uses `max(paste_delay_ms, 150 ms)` to avoid racing ahead of the target window's clipboard read. |
 
 **One-key trigger semantics.** When `one_key_trigger` is set, the client
 accepts two ways to record: the chord in `trigger`, or the single key in
@@ -261,7 +261,7 @@ Same UIPI caveat as any Windows input hook:
 - Multipart HTTP(S) POST via `ureq`, optional `X-Auth-Token`.
 - Save-Paste-Restore clipboard injection (controlled by `auto_paste`):
   save current clipboard -> set transcript + trailing space ->
-  `Ctrl+V` via `SendInput` -> wait `paste_delay_ms` -> restore.
+  `Ctrl+V` via `SendInput` -> wait `max(paste_delay_ms, 150 ms)` -> restore.
 - `--detach` mode: re-spawns as a background process with stdio
   redirected to `%APPDATA%\ghostscribe\ghostscribe.log`.
 - `--tray` mode: system-tray icon with state-aware colours, live config

@@ -45,7 +45,7 @@ trigger         = "key:ctrl+g"     # key:[modifier+]<keyname>  OR  mouse:<button
                                    # mouse buttons: left, right, middle, x1 (back), x2 (forward)
 one_key_trigger = ""               # empty, or key:ctrl|alt|f1..f12
 auto_paste      = true             # false => stdout only
-paste_delay_ms  = 50               # ms before Ctrl+V and before clipboard restore
+paste_delay_ms  = 50               # ms to wait before Ctrl+V; restore uses max(this, 150 ms)
 ```
 
 All fields are optional; omitted keys fall back to the defaults above.
@@ -60,7 +60,7 @@ All fields are optional; omitted keys fall back to the defaults above.
 | `trigger`         | `key:ctrl+g`         | Keyboard: `key:[mod+…+]<key>`. Multiple modifiers: `key:ctrl+shift+g`. Modifiers: `ctrl`, `shift`, `alt`, `super`/`meta` (Meta key). Keys: `a`–`z`, `0`–`9`, `f1`–`f12`, `space`, `tab`, `escape`, arrow keys, etc. Mouse: `mouse:<button>` — `left`, `right`, `middle`, `x1` (back), `x2` (forward). |
 | `one_key_trigger` | empty                | Optional single-key PTT (`key:ctrl`, `key:alt`, `key:f1`–`key:f12`). Foreign key mid-record cancels the take. |
 | `auto_paste`      | `true`               | Save clipboard → set transcript → `Ctrl+V` → restore clipboard.                          |
-| `paste_delay_ms`  | `50`                 | Applied before injecting `Ctrl+V` and before restoring the clipboard.                    |
+| `paste_delay_ms`  | `50`                 | Sleep before injecting `Ctrl+V`. Clipboard restore uses `max(paste_delay_ms, 150 ms)` to avoid racing ahead of the target window's clipboard read. |
 | `request_timeout_s` | `30`               | HTTP POST timeout in seconds.                                                             |
 | `smart_space`     | `true`               | Prepends a space when pasting within `continuation_window_s` of the last paste.          |
 | `continuation_window_s` | `30`         | Seconds after the last paste that counts as a continuation.                               |
