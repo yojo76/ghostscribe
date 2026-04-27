@@ -31,6 +31,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -545,10 +546,36 @@ def inject_enter() -> None:
 
 
 _DO_IT_NOW_RE = re.compile(r"^do\s+it\s+now\W*$", re.IGNORECASE)
+_NOTE_RE = re.compile(r"^(?:log\s+this|make\s+note)[,.:!\s]*", re.IGNORECASE)
+
+_NOTE_FILE = Path.home() / "Documents" / "notes" / "note.txt"
 
 
 def _is_do_it_now(text: str) -> bool:
     return bool(_DO_IT_NOW_RE.match(text.strip()))
+
+
+def _try_append_note(text: str) -> bool:
+    """If ``text`` starts with 'log this' or 'make note', strip the trigger,
+    append a timestamped line to ``_NOTE_FILE``, and return True.
+    Returns False if the text does not match."""
+    m = _NOTE_RE.match(text.strip())
+    if not m:
+        return False
+    body = text.strip()[m.end():].strip()
+    if not body:
+        _eprint("[note] trigger matched but no text to save — ignored")
+        return True
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"{timestamp}  {body}\n"
+    try:
+        _NOTE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with _NOTE_FILE.open("a", encoding="utf-8") as f:
+            f.write(line)
+        _eprint(f"[note] saved to {_NOTE_FILE}: {body[:60]}")
+    except OSError as exc:
+        _eprint(f"[note] failed to write {_NOTE_FILE}: {exc}")
+    return True
 
 
 def inject_paste(delay_ms: int, use_shift: bool = False) -> None:
@@ -631,6 +658,9 @@ def submit(
     if cfg.auto_paste and _is_do_it_now(text):
         _eprint("[do-it-now] Enter")
         inject_enter()
+        return text
+
+    if _try_append_note(text):
         return text
 
     pasted = False
