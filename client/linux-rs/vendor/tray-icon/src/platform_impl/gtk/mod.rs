@@ -23,24 +23,28 @@ pub struct TrayIcon {
 impl TrayIcon {
     pub fn new(_id: TrayIconId, attrs: TrayIconAttributes) -> crate::Result<Self> {
         let id = COUNTER.next();
-        let mut indicator = AppIndicator::new("tray-icon tray app", "");
-        indicator.set_status(AppIndicatorStatus::Active);
 
+        // Write the icon PNG before creating the indicator so the file exists
+        // when app_indicator_new_with_path registers it with the panel.
         let (parent_path, icon_path) = temp_icon_path(attrs.temp_dir_path.as_ref(), id, 0)?;
-
         if let Some(icon) = attrs.icon {
             icon.inner.write_to_png(&icon_path)?;
         }
 
-        indicator.set_icon_theme_path(&parent_path.to_string_lossy());
-        // AppIndicator expects the icon stem (no path, no extension), not the full path.
-        indicator.set_icon_full(
-            &icon_path
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy(),
-            "icon",
+        // Use with_path so the theme dir and icon stem are both known at
+        // construction time; set_status(Active) is then called with a valid
+        // icon already registered.  AppIndicator expects the stem only —
+        // no directory prefix, no .png extension.
+        let icon_stem = icon_path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy();
+        let mut indicator = AppIndicator::with_path(
+            "tray-icon tray app",
+            &icon_stem,
+            &parent_path.to_string_lossy(),
         );
+        indicator.set_status(AppIndicatorStatus::Active);
 
         if let Some(menu) = &attrs.menu {
             indicator.set_menu(&mut menu.gtk_context_menu());

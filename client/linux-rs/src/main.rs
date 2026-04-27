@@ -357,7 +357,8 @@ fn do_upload_and_paste(
         match paste::set_clipboard(&paste_text) {
             Err(e) => logln!("[paste] clipboard write failed: {e}"),
             Ok(()) => {
-                paste::inject_ctrl_v(cfg.paste_delay_ms);
+                let (combo, win_cls) = paste::inject_paste(cfg.paste_delay_ms);
+                logln!("[paste] window={win_cls:?} -> {combo}");
                 *lp = Some(std::time::Instant::now());
                 // Wait for the target window to read the clipboard before
                 // restoring the saved value. paste_delay_ms (default 50 ms)
