@@ -688,6 +688,8 @@ def submit(
         combo_used = "ctrl+shift+v" if use_shift else "ctrl+v"
         _eprint(f"[paste] window={win_cls!r} -> {combo_used}")
 
+        # Save clipboard BEFORE writing the transcript to it.
+        # None means xclip failed entirely; treat same as empty for restore.
         saved = read_clipboard()
         # Trailing space so back-to-back takes don't concatenate in the
         # target field. Only applied to the pasted copy — not to _eprint().
@@ -696,18 +698,22 @@ def submit(
                 inject_paste(cfg.paste_delay_ms, use_shift=use_shift)
                 pasted = True
                 _last_paste_time = time.monotonic()
-                # Wait for the target window to issue its SelectionRequest
-                # (i.e. actually read the clipboard after processing Ctrl+V).
-                # paste_delay_ms (default 50 ms) is too short under load;
-                # enforce a floor of 150 ms. The delay is invisible to the
-                # user because the pasted text has already appeared.
-                restore_delay_s = max(cfg.paste_delay_ms, 150) / 1000.0
-                time.sleep(restore_delay_s)
-                if saved is not None:
-                    copy_to_clipboard(saved)
-                    _eprint("[paste] clipboard restored")
             except Exception as exc:
                 _eprint(f"[paste] {combo_used} injection failed: {exc}")
+
+            # Always restore clipboard, even if inject raised.
+            # Wait for the target window to issue its SelectionRequest
+            # (i.e. actually read the clipboard after processing Ctrl+V).
+            # paste_delay_ms (default 50 ms) is too short under load;
+            # enforce a floor of 150 ms. Invisible to the user because
+            # the pasted text has already appeared by then.
+            restore_delay_s = max(cfg.paste_delay_ms, 150) / 1000.0
+            time.sleep(restore_delay_s)
+            restore_text = saved if saved is not None else ""
+            if copy_to_clipboard(restore_text):
+                _eprint(f"[paste] clipboard restored ({len(restore_text)} chars)")
+            else:
+                _eprint("[paste] clipboard restore failed")
     if pasted:
         _eprint(f"[paste] pasted via {combo_used} into focused window:")
     else:
