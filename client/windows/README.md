@@ -87,50 +87,19 @@ Config search order:
 
 ## 3. Run
 
+### Tray mode (default)
+
 Double-click the `.exe`, or from PowerShell:
 
 ```powershell
 .\ghostscribe-client.exe
-```
-
-### Detached mode (recommended for daily use)
-
-Pass `--detach` to re-spawn the client as a background process with no
-console attachment. The original invocation prints the new PID and exits;
-the child writes all log output to `%APPDATA%\ghostscribe\ghostscribe.log`:
-
-```powershell
-.\ghostscribe-client.exe --detach
 # ghostscribe-client detached (pid 12345)
 # logs: C:\Users\you\AppData\Roaming\ghostscribe\ghostscribe.log
 ```
 
-Use `--detach` when:
-
-- Launching from an **IDE-integrated terminal** (Cursor, VS Code, JetBrains)
-  whose own UI is the paste target. A child of the IDE inherits a
-  parent/foreground-window relationship that can cause Chromium-based
-  text inputs (Cursor's agent chat being the canonical case) to silently
-  ignore the synthesised `Ctrl+V`. A detached child sits outside that
-  process tree and pastes reliably.
-- Setting up **autostart-on-login**: create a Windows Startup shortcut
-  pointing at `ghostscribe-client.exe --detach` and you get a
-  console-less, log-to-file daemon that survives shell restarts.
-
-Stop a detached instance with `Stop-Process -Name ghostscribe-client`.
-
-### Tray mode (recommended for interactive editing)
-
-Pass `--tray` to run with a system-tray icon and live config editing:
-
-```powershell
-.\ghostscribe-client.exe --tray
-# ghostscribe-client detached (pid 12345)
-# logs: C:\Users\you\AppData\Roaming\ghostscribe\ghostscribe.log
-```
-
-`--tray` implies `--detach`: the parent exits and the tray becomes the
-only UI surface (no console window to manage). Left-click the icon to
+The process detaches from the console automatically on first launch and
+shows a system-tray icon (next to the clock). All log output goes to
+`%APPDATA%\ghostscribe\ghostscribe.log`. Left-click the icon to
 open the context menu:
 
 - **Edit config…** – opens the active `config.toml` in your default
@@ -179,9 +148,9 @@ While recording, two background timers run:
   after this many seconds, recording is force-stopped and the buffer
   is uploaded. Set to `0` to disable.
 
-Both timers are inactive in headless (`--detach`) mode.
+Both timers are inactive in headless (`--no-tray`) mode.
 
-**What `--tray` does not do:**
+**What the tray does not do:**
 
 - No balloon toasts (`Shell_NotifyIconW NIF_INFO`). Tooltips and the
   error dialog carry the same information.
@@ -189,21 +158,42 @@ Both timers are inactive in headless (`--detach`) mode.
 - No global hotkey to toggle the tray — right-click the icon and pick
   Quit to exit.
 
-### Foreground mode (for debugging)
+### Headless mode (`--no-tray`)
 
-Run without `--detach` to keep the console attached and see logs live:
+Run without a tray icon, logging to stderr:
 
-Banner:
+```powershell
+.\ghostscribe-client.exe --no-tray
+```
+
+Add `--detach` to run headless as a background process with logs written
+to `%APPDATA%\ghostscribe\ghostscribe.log` (useful for IDE-integrated
+terminals or autostart-on-login shortcuts):
+
+```powershell
+.\ghostscribe-client.exe --no-tray --detach
+# ghostscribe-client detached (pid 12345)
+# logs: C:\Users\you\AppData\Roaming\ghostscribe\ghostscribe.log
+```
+
+Why detach when using an IDE terminal? A child of the IDE inherits a
+parent/foreground-window relationship that can cause Chromium-based
+text inputs (Cursor's agent chat, for example) to silently ignore the
+synthesised `Ctrl+V`. A detached child sits outside that process tree
+and pastes reliably.
+
+Stop any background instance with `Stop-Process -Name ghostscribe-client`.
+
+Banner (headless):
 
 ```
-GhostScribe client -> http://SERVER_HOST:5005/v1/auto
+GhostScribe client (headless) -> http://SERVER_HOST:5005/v1/auto
 config:   C:\...\config.toml
 trigger:  key:ctrl+g
 one_key:  off
 format:   flac
 auth:     on
 paste:    on (delay 50 ms)
-device:   Microphone (Realtek Audio) (48000 Hz, 2 ch)
 Hold key:ctrl+g and speak. Release to transcribe. Ctrl+C to quit.
 ```
 
@@ -262,16 +252,17 @@ Same UIPI caveat as any Windows input hook:
 - Save-Paste-Restore clipboard injection (controlled by `auto_paste`):
   save current clipboard -> set transcript + trailing space ->
   `Ctrl+V` via `SendInput` -> wait `max(paste_delay_ms, 150 ms)` -> restore.
-- `--detach` mode: re-spawns as a background process with stdio
-  redirected to `%APPDATA%\ghostscribe\ghostscribe.log`.
-- `--tray` mode: system-tray icon with state-aware colours, live config
-  reload (hot keys applied atomically; cold keys surface a
-  restart-required state), and an editor-launching menu.
+- Default (tray) mode: system-tray icon with state-aware colours, live
+  config reload (hot keys applied atomically; cold keys surface a
+  restart-required state), and an editor-launching menu. Detaches from
+  the console automatically on first launch.
+- `--no-tray --detach` mode: re-spawns as a background headless process
+  with stdio redirected to `%APPDATA%\ghostscribe\ghostscribe.log`.
 
 **Not implemented (deferred; see `README.python.md` for the roadmap):**
 
 - No installer. Autostart-on-login works today by pointing a Windows
-  Startup shortcut at `ghostscribe-client.exe --tray`.
+  Startup shortcut at `ghostscribe-client.exe` (tray by default).
 - No terminal detection / bracketed-paste fallback.
 - No client-side VAD (server-side VAD handles silence).
 - No streaming / live partial transcripts.
@@ -295,7 +286,7 @@ can pipe them wherever you like even when the paste is on.
 | `src/hotkey.rs`        | `WH_KEYBOARD_LL` + `WH_MOUSE_LL` hooks; chord, one-key, and mouse-button PTT. |
 | `src/upload.rs`        | Multipart `ureq` POST with `X-Auth-Token`.       |
 | `src/paste.rs`         | Save-Paste-Restore via Win32 clipboard + `SendInput`. |
-| `src/tray.rs`          | `--tray` icon, procedural state-tinted glyphs, menu wiring. |
+| `src/tray.rs`          | System-tray icon (default mode), procedural state-tinted glyphs, menu wiring. |
 | `src/watcher.rs`       | 1 s mtime poll of the active `config.toml`; diffs against live config. |
 | `tests/upload.rs`      | Integration tests against a mock HTTP server.    |
 | `tests/config_diff.rs` | Integration tests for hot/cold `config::diff` classification. |

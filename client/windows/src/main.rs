@@ -4,11 +4,11 @@
 //! Release either key to encode WAV, POST to the server, and paste the transcript.
 //!
 //! Two run modes:
-//! * **Headless** (default): blocks on the hotkey channel, logs to stderr.
-//! * **Tray** (`--tray`): shows a system-tray icon, supports in-place config
+//! * **Tray** (default): shows a system-tray icon, supports in-place config
 //!   editing with validation, runs until the user picks Quit. Implies
 //!   `--detach` unless the env var `GHOSTSCRIBE_DETACHED=1` is set, so that
 //!   double-clicking the exe hides the console window.
+//! * **Headless** (`--no-tray`): blocks on the hotkey channel, logs to stderr.
 
 use std::fs;
 use std::os::windows::process::CommandExt;
@@ -116,7 +116,7 @@ impl MaxDurationTimer {
 struct Args {
     config: Option<PathBuf>,
     detach: bool,
-    tray: bool,
+    no_tray: bool,
 }
 
 fn parse_args() -> Args {
@@ -129,8 +129,9 @@ fn parse_args() -> Args {
                     out.config = Some(PathBuf::from(p));
                 }
             }
-            "--detach" => out.detach = true,
-            "--tray"   => out.tray = true,
+            "--detach"  => out.detach = true,
+            "--no-tray" => out.no_tray = true,
+            "--tray"    => {} // legacy alias: tray is now the default
             "-h" | "--help" => {
                 print_help();
                 std::process::exit(0);
@@ -144,18 +145,19 @@ fn parse_args() -> Args {
 fn print_help() {
     println!(
         "GhostScribe Windows client\n\n\
-         Usage: ghostscribe-client.exe [--config PATH] [--detach] [--tray]\n\n\
+         Usage: ghostscribe-client.exe [--config PATH] [--no-tray] [--detach]\n\n\
          Hold the configured trigger key to record. Release to transcribe.\n\n\
          Options:\n  \
            --config PATH   Use this TOML config file.\n  \
-           --tray          Run with a system-tray icon and live config editing.\n                          \
-         Implies --detach unless already detached.\n  \
+           --no-tray       Run headless (no tray icon), log to stderr.\n  \
            --detach        Re-spawn as a detached background process with no\n                          \
          console attachment, redirecting all logs to\n                          \
-         %APPDATA%\\ghostscribe\\ghostscribe.log. Use this when\n                          \
-         launching from an IDE-integrated terminal (e.g. Cursor)\n                          \
-         or for autostart-on-login shortcuts.\n  \
+         %APPDATA%\\ghostscribe\\ghostscribe.log. Tray mode detaches\n                          \
+         automatically; use this with --no-tray when launching from\n                          \
+         an IDE terminal or for autostart-on-login shortcuts.\n  \
            -h, --help      Show this help and exit.\n\n\
+         Default behaviour: tray mode (system-tray icon, live config reload).\n\
+         The process detaches from the console automatically on first launch.\n\n\
          Config search order:\n  \
            1. --config PATH\n  \
            2. <exe directory>\\config.toml\n  \
@@ -193,7 +195,7 @@ fn spawn_detached(extra_args: &[&str]) -> Result<u32> {
 
     let mut forwarded: Vec<String> = std::env::args()
         .skip(1)
-        .filter(|a| a != "--detach" && a != "--tray")
+        .filter(|a| a != "--detach" && a != "--tray") // --tray is legacy no-op; --no-tray is kept
         .collect();
     for a in extra_args {
         forwarded.push((*a).to_string());
@@ -221,24 +223,29 @@ fn already_detached() -> bool {
 fn main() -> Result<()> {
     let args = parse_args();
 
-    // Detach / tray-detach promotion. `--tray` implies `--detach` so that
-    // double-clicking the exe doesn't leave a console window around. We only
-    // auto-detach once (ENV_DETACHED on the child breaks the recursion).
-    if args.detach && !already_detached() {
+    // Tray is the default mode. It always detaches so that double-clicking
+    // the exe doesn't leave a console window open. We only auto-detach once
+    // (ENV_DETACHED on the child breaks the recursion).
+    //
+    // --no-tray opts into headless mode. --detach with --no-tray spawns a
+    // detached headless process (useful for IDE terminals / autostart).
+    if !args.no_tray && !already_detached() {
+        // Tray mode: detach and run with tray icon.
         spawn_detached(&[])?;
         return Ok(());
     }
-    if args.tray && !already_detached() {
-        spawn_detached(&["--tray"])?;
+    if args.no_tray && args.detach && !already_detached() {
+        // Headless + explicit detach: re-spawn without console.
+        spawn_detached(&["--no-tray"])?;
         return Ok(());
     }
 
     let cfg = config::load(args.config.as_deref())?;
 
-    if args.tray {
-        run_tray(cfg, args)
-    } else {
+    if args.no_tray {
         run_headless(cfg)
+    } else {
+        run_tray(cfg, args)
     }
 }
 
@@ -729,7 +736,9 @@ fn handle_menu_action(
             false
         }
         MenuAction::Restart => {
-            let extra: Vec<&str> = if args.tray { vec!["--tray"] } else { vec![] };
+            // In tray mode (the default) we re-spawn with no extra flags;
+            // the child will default to tray again.
+            let extra: Vec<&str> = if args.no_tray { vec!["--no-tray"] } else { vec![] };
             if let Err(e) = spawn_detached(&extra) {
                 tray::show_error_box("GhostScribe", &format!("Restart failed: {e:#}"));
                 return false;
