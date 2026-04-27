@@ -45,3 +45,15 @@ auto_paste = true
 
 # Milliseconds to wait before injecting Ctrl+V (give the window focus time).
 paste_delay_ms = 50
+
+# HTTP POST timeout in seconds.
+request_timeout_s = 30
+
+# Prepend a space when the transcript follows recent dictation (smart spacing).
+smart_space = true
+
+# Seconds after the last paste that still counts as "continuing" dictation.
+continuation_window_s = 30
+
+# Auto-stop recording after this many seconds (0 = no limit).
+max_record_s = 300

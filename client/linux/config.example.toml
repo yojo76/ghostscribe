@@ -48,3 +48,27 @@ auto_paste = true
 # Gives the X server a tick to settle and the target window to be ready.
 # Increase (e.g. 100) if the target occasionally misses the paste.
 paste_delay_ms = 50
+
+# Optional single-key push-to-talk. Coexists with `trigger`:
+#   - Press this key alone -> start recording; release -> send.
+#   - If another key is pressed mid-recording, the take is cancelled
+#     and locked out until this key is released. Keys that are part of
+#     `trigger` (e.g. the main chord key) are treated as neutral and do
+#     not cancel.
+#   - If `trigger` is fully satisfied first (all chord keys held), the
+#     chord path wins; one-key does not fire until the chord releases.
+# Allowed values: key:ctrl, key:alt, key:f1 .. key:f24. Empty = disabled.
+# Letters, digits, and shift are intentionally rejected (would hijack typing).
+one_key_trigger = ""
+
+# HTTP POST timeout in seconds.
+request_timeout_s = 30
+
+# Prepend a space when the transcript follows recent dictation (smart spacing).
+smart_space = true
+
+# Seconds after the last paste that still counts as "continuing" dictation.
+continuation_window_s = 30
+
+# Auto-stop recording after this many seconds (0 = no limit).
+max_record_s = 300
