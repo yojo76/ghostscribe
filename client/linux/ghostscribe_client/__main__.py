@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import io
 import os
 import queue
@@ -1582,7 +1583,36 @@ def apply_overrides(cfg: ClientConfig, args: argparse.Namespace) -> ClientConfig
     )
 
 
+# Module-level handle kept open so the OS lock is held for the process lifetime.
+_singleton_fh = None
+
+
+def _acquire_singleton_lock() -> bool:
+    """Acquire an exclusive non-blocking flock on a well-known lock file.
+
+    Returns True if this process is the sole instance.  Returns False if
+    another instance already holds the lock.  The lock is automatically
+    released by the OS when the process exits (even on crash).
+    """
+    global _singleton_fh
+    lock_path = _log_file_path().parent / "ghostscribe.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _singleton_fh = lock_path.open("w")
+        fcntl.flock(_singleton_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _singleton_fh.write(str(os.getpid()))
+        _singleton_fh.flush()
+        return True
+    except OSError:
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
+    if not _acquire_singleton_lock():
+        sys.stderr.write(
+            "ghostscribe-client: another instance is already running\n"
+        )
+        return 1
     args = parse_args(argv)
     cfg = load_config(args.config)
     cfg = apply_overrides(cfg, args)
